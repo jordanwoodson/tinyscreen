@@ -1,6 +1,7 @@
 package io.github.jordanwoodson.tinyscreen.auth
 
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -49,7 +50,7 @@ fun LoginScreen(onDone: () -> Unit) {
     val webView = remember {
         createWebView(
             context,
-            adblock = { true },
+            adblock = { graph.settings.settings.value.adblock },
             userAgent = Http.MOBILE_UA,
             onPageFinished = { view, url ->
                 loading = false
@@ -83,6 +84,8 @@ fun LoginScreen(onDone: () -> Unit) {
         webView.loadUrl("https://www.destiny.gg/login")
         onDispose { webView.destroy() }
     }
+    // Back steps back through the sign-in pages (a provider's page, then destiny.gg's) before leaving
+    BackHandler { if (webView.canGoBack()) webView.goBack() else onDone() }
 
     Scaffold(
         topBar = {

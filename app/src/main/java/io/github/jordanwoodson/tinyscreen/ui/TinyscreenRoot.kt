@@ -176,10 +176,8 @@ fun TinyscreenRoot(activity: MainActivity, host: HostActions) {
                             val metered by graph.network.metered.collectAsState()
                             SettingsScreen(settings, metered, onChange = { graph.settings.launchUpdate(graph.scope, it) }, onBack = { overlay = null })
                         }
-                        Overlay.Login -> {
-                            BackHandler { overlay = null }
-                            io.github.jordanwoodson.tinyscreen.auth.LoginScreen(onDone = { overlay = null })
-                        }
+                        // Handles Back itself, to go back a page first
+                        Overlay.Login -> io.github.jordanwoodson.tinyscreen.auth.LoginScreen(onDone = { overlay = null })
                         Overlay.Whispers -> {
                             BackHandler { overlay = null }
                             io.github.jordanwoodson.tinyscreen.chat.ui.WhispersScreen(onBack = { overlay = null })
