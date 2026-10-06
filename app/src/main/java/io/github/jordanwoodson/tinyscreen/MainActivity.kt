@@ -14,6 +14,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.runtime.mutableStateOf
 import androidx.core.app.PictureInPictureModeChangedInfo
@@ -29,6 +30,7 @@ import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
 import io.github.jordanwoodson.tinyscreen.player.PlaybackService
 import io.github.jordanwoodson.tinyscreen.ui.TinyscreenRoot
+import io.github.jordanwoodson.tinyscreen.web.WebEmbedHolder
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 
@@ -42,6 +44,7 @@ interface HostActions {
 
 class MainActivity : ComponentActivity(), HostActions {
     private val graph get() = (application as TinyscreenApp).graph
+    private val webEmbed: WebEmbedHolder by viewModels()
     private var controllerFuture: ListenableFuture<MediaController>? = null
 
     val inPip = mutableStateOf(false)
@@ -83,6 +86,7 @@ class MainActivity : ComponentActivity(), HostActions {
         super.onCreate(savedInstanceState)
         isLandscape.value = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         applySystemBars()
+        webEmbed.attach(this)
         addOnPictureInPictureModeChangedListener(pipListener)
         graph.player.player.addListener(playerListener)
         lifecycleScope.launch {
@@ -150,6 +154,7 @@ class MainActivity : ComponentActivity(), HostActions {
 
     override fun onDestroy() {
         controllerFuture?.let { MediaController.releaseFuture(it) }
+        webEmbed.detach(this)
         graph.player.player.removeListener(playerListener)
         removeOnPictureInPictureModeChangedListener(pipListener)
         super.onDestroy()

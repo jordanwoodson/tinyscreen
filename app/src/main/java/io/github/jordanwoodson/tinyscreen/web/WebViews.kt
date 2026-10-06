@@ -1,7 +1,10 @@
 package io.github.jordanwoodson.tinyscreen.web
 
 import android.annotation.SuppressLint
+import android.app.Activity
+import android.app.Application
 import android.content.Context
+import android.content.MutableContextWrapper
 import android.graphics.Bitmap
 import android.net.Uri
 import android.view.View
@@ -15,11 +18,10 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.AndroidViewModel
+import io.github.jordanwoodson.tinyscreen.TinyscreenApp
 import io.github.jordanwoodson.tinyscreen.adblock.AdBlocker
 import io.github.jordanwoodson.tinyscreen.net.Http
 
@@ -73,39 +75,80 @@ fun createWebView(
 }
 
 /**
- * Plays an arbitrary embed URL inside an iframe whose parent origin is destiny.gg — the same
- * way the bigscreen page hosts it, which satisfies Twitch's `parent=` and YouTube's referrer checks.
+ * Owns the web player's WebView outside composition, so rotating, picture-in-picture, Settings and
+ * activity recreation (font size, language) move the player around instead of reloading the embed.
+ * It lives in the activity's ViewModelStore, so it goes away when the activity finishes for good.
  */
-@Composable
-fun WebEmbedPlayer(embedUrl: String, adblock: Boolean, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
-    val adblockState = remember { booleanArrayOf(adblock) }
-    adblockState[0] = adblock
-    val fullscreenHost = remember { FullscreenChromeClient() }
-    val webView = remember {
-        createWebView(context, adblock = { adblockState[0] }, userAgent = Http.DESKTOP_UA, chrome = fullscreenHost)
+class WebEmbedHolder(app: Application) : AndroidViewModel(app) {
+    private val graph = (app as TinyscreenApp).graph
+
+    // A WebView keeps the context it was built with; point it at whichever activity is current
+    private val context = MutableContextWrapper(app)
+    private val fullscreenHost = FullscreenChromeClient()
+    private var webView: WebView? = null
+    private var loadedUrl: String? = null
+
+    fun attach(activity: Activity) {
+        context.baseContext = activity
     }
-    DisposableEffect(webView) {
-        onDispose {
-            webView.stopLoading()
-            webView.loadUrl("about:blank")
-            webView.destroy()
+
+    fun detach(activity: Activity) {
+        if (context.baseContext === activity) context.baseContext = getApplication()
+    }
+
+    private fun view(): WebView = webView ?: createWebView(
+        context,
+        adblock = { graph.settings.settings.value.adblock },
+        userAgent = Http.DESKTOP_UA,
+        chrome = fullscreenHost,
+    ).also { webView = it }
+
+    /**
+     * Plays [embedUrl] inside an iframe whose parent origin is destiny.gg — the same way the bigscreen
+     * page hosts it, which satisfies Twitch's `parent=` and YouTube's referrer checks. Null blanks the
+     * player. Loading the URL that's already playing does nothing.
+     */
+    fun show(embedUrl: String?) {
+        if (embedUrl == loadedUrl) return
+        loadedUrl = embedUrl
+        if (embedUrl == null) {
+            webView?.apply {
+                stopLoading()
+                loadUrl("about:blank")
+            }
+            return
         }
+        view().loadDataWithBaseURL("$DGG_ORIGIN/bigscreen", iframeHtml(embedUrl), "text/html", "utf-8", null)
     }
+
+    internal fun attachTo(frame: FrameLayout) {
+        val view = view()
+        (view.parent as? ViewGroup)?.removeView(view)
+        frame.addView(view)
+        fullscreenHost.container = frame
+    }
+
+    internal fun detachFrom(frame: FrameLayout) {
+        webView?.let { if (it.parent === frame) frame.removeView(it) }
+        if (fullscreenHost.container === frame) fullscreenHost.container = null
+    }
+
+    override fun onCleared() {
+        // The activity's ViewModels can be cleared before its views are torn down
+        webView?.let { view ->
+            (view.parent as? ViewGroup)?.removeView(view)
+            view.destroy()
+        }
+        webView = null
+    }
+}
+
+/** Shows the [WebEmbedHolder]'s player; what it plays is set with [WebEmbedHolder.show]. */
+@Composable
+fun WebEmbedPlayer(holder: WebEmbedHolder, modifier: Modifier = Modifier) {
     AndroidView(
-        factory = {
-            FrameLayout(it).apply {
-                addView(webView)
-                fullscreenHost.container = this
-            }
-        },
-        update = {
-            val html = iframeHtml(embedUrl)
-            if (webView.tag != embedUrl) {
-                webView.tag = embedUrl
-                webView.loadDataWithBaseURL("$DGG_ORIGIN/bigscreen", html, "text/html", "utf-8", null)
-            }
-        },
+        factory = { FrameLayout(it).apply { holder.attachTo(this) } },
+        onRelease = { holder.detachFrom(it) },
         modifier = modifier,
     )
 }
