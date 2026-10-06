@@ -2,8 +2,8 @@
 <resources>
     <style name="Theme.Tinyscreen" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/background</item>
-        <item name="android:statusBarColor">@android:color/transparent</item>
-        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <!-- No status/navigation bar colours: Android 15+ ignores them, and enableEdgeToEdge() in
+             MainActivity makes both bars transparent on every version -->
         <item name="android:windowLayoutInDisplayCutoutMode">always</item>
     </style>
 </resources>

@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
@@ -26,6 +27,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -51,6 +53,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -76,6 +79,12 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
@@ -367,7 +376,7 @@ private fun ChatSlot(
 @Composable
 private fun TopBar(nick: String?, onMenu: () -> Unit, onLogin: () -> Unit, content: Content) {
     Row(
-        Modifier.fillMaxWidth().height(48.dp).background(MaterialTheme.colorScheme.surfaceContainerLowest),
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).background(MaterialTheme.colorScheme.surfaceContainerLowest),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         IconButton(onClick = onMenu) { Icon(Icons.Filled.Menu, "Menu") }
@@ -501,7 +510,7 @@ private fun MiniPlayerBar(vm: BigscreenViewModel, webEmbed: WebEmbedHolder, onEx
     val webPlaying by webEmbed.playing.collectAsState()
     val playing = if (web) webPlaying else state.playWhenReady
     Row(
-        Modifier.fillMaxWidth().height(48.dp).background(MaterialTheme.colorScheme.surfaceContainer).clickable(onClick = onExpand)
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).background(MaterialTheme.colorScheme.surfaceContainer).clickable(onClick = onExpand)
             .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -515,7 +524,7 @@ private fun MiniPlayerBar(vm: BigscreenViewModel, webEmbed: WebEmbedHolder, onEx
                 else -> vm.player.player.play()
             }
         }) {
-            Icon(if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, "Play/pause")
+            Icon(if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, if (playing) "Pause" else "Play")
         }
     }
 }
@@ -530,17 +539,19 @@ fun ChatControlBar(
     onClose: (() -> Unit)?,
     onMenu: (() -> Unit)? = null,
 ) {
+    // Grows with the text size; buttons keep 48dp touch targets
     Row(
-        Modifier.fillMaxWidth().height(36.dp).background(Color(0xFF111113)),
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).background(Color(0xFF111113)),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         onMenu?.let { BarButton(Icons.Filled.Menu, "Menu", onClick = it) }
         BarButton(Icons.Filled.Refresh, "Refresh", onClick = onRefresh)
         Row(
             Modifier
+                .minimumInteractiveComponentSize()
                 .padding(horizontal = 4.dp)
                 .background(if (cinema) MaterialTheme.colorScheme.primaryContainer else Color(0xFF1C1D20), RoundedCornerShape(6.dp))
-                .clickable(onClick = onCinema)
+                .toggleable(value = cinema, role = Role.Switch, onValueChange = { onCinema() })
                 .padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -557,7 +568,7 @@ fun ChatControlBar(
 
 @Composable
 private fun BarButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
-    IconButton(onClick = onClick, modifier = Modifier.size(36.dp)) {
+    IconButton(onClick = onClick) {
         Icon(icon, label, modifier = Modifier.size(18.dp), tint = Color(0xFFB0B4BA))
     }
 }
@@ -586,6 +597,14 @@ private fun LandscapeLayout(
             dragFraction = ((totalWidth * dragFraction + signed) / totalWidth).coerceIn(0.15f, 0.7f)
         }
     }
+    fun saveWidth() {
+        val f = dragFraction
+        graph.settings.launchUpdate(graph.scope) { it.copy(chatWidthFraction = f) }
+    }
+    fun resizeBy(delta: Float) {
+        dragFraction = (dragFraction + delta).coerceIn(0.15f, 0.7f)
+        saveWidth()
+    }
     // Stream controls only fit under the video on tall screens
     val tall = LocalConfiguration.current.screenHeightDp > 560
 
@@ -609,11 +628,17 @@ private fun LandscapeLayout(
                             .draggable(
                                 dragState,
                                 Orientation.Horizontal,
-                                onDragStopped = {
-                                    val f = dragFraction
-                                    graph.settings.launchUpdate(graph.scope) { it.copy(chatWidthFraction = f) }
-                                },
-                            ),
+                                onDragStopped = { saveWidth() },
+                            )
+                            // TalkBack can't drag: offer the same as actions
+                            .semantics {
+                                contentDescription = "Chat width"
+                                stateDescription = "${(dragFraction * 100).roundToInt()}%"
+                                customActions = listOf(
+                                    CustomAccessibilityAction("Make chat wider") { resizeBy(0.05f); true },
+                                    CustomAccessibilityAction("Make chat narrower") { resizeBy(-0.05f); true },
+                                )
+                            },
                         contentAlignment = Alignment.Center,
                     ) {
                         Box(Modifier.width(3.dp).height(36.dp).background(Color(0xFF43484E), CircleShape))
@@ -690,8 +715,8 @@ private fun FloatingBarButton(icon: androidx.compose.ui.graphics.vector.ImageVec
     Surface(
         color = Color(0xFF1C1D20).copy(alpha = 0.85f),
         shape = RoundedCornerShape(8.dp),
-        modifier = Modifier.padding(4.dp).clickable(onClick = onClick),
+        modifier = Modifier.padding(4.dp).clickable(role = Role.Button, onClick = onClick),
     ) {
-        Icon(icon, label, tint = Color.White, modifier = Modifier.padding(10.dp))
+        Icon(icon, label, tint = Color.White, modifier = Modifier.padding(12.dp))
     }
 }
