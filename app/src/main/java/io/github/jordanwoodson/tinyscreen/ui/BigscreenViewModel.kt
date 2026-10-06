@@ -1,8 +1,11 @@
 package io.github.jordanwoodson.tinyscreen.ui
 
 import android.app.Application
+import android.os.Bundle
 import android.util.Log
+import androidx.core.os.bundleOf
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.C
 import io.github.jordanwoodson.tinyscreen.TinyscreenApp
@@ -50,20 +53,29 @@ sealed interface Playback {
     data class Failed(val embed: Embed, val message: String) : Playback
 }
 
-class BigscreenViewModel(app: Application) : AndroidViewModel(app) {
+/**
+ * [saved] survives Android closing the app in the background, so coming back reopens the embed (and
+ * VOD position) you were watching rather than Destiny's stream.
+ */
+class BigscreenViewModel(app: Application, private val saved: SavedStateHandle) : AndroidViewModel(app) {
     private val graph = (app as TinyscreenApp).graph
     private val live = graph.live
     val settings = graph.settings.settings
     val player = graph.player
 
-    private val _hashEmbed = MutableStateFlow<Embed?>(null)
+    private val _hashEmbed = MutableStateFlow(savedEmbed())
     val hashEmbed: StateFlow<Embed?> = _hashEmbed.asStateFlow()
 
     /** Platform chosen for Destiny's own stream this session (Change Platform). */
-    private val _currentPlatform = MutableStateFlow<String?>(null)
+    private val _currentPlatform = MutableStateFlow(saved.get<String>(KEY_PLATFORM))
 
     /** Embeds the user flipped to the web player (or back) by hand. */
-    private val _forceWeb = MutableStateFlow<Set<String>>(emptySet())
+    private val _forceWeb = MutableStateFlow(saved.get<ArrayList<String>>(KEY_FORCE_WEB)?.toSet() ?: emptySet())
+
+    /** Where the VOD was when Android closed the app, for when that embed loads again. */
+    private var resumeAfterRestore: Pair<String, Long>? = saved.get<Bundle>(KEY_RESUME)?.let { b ->
+        b.getString("embed")?.let { it to b.getLong("position") }
+    }
 
     val streamInfo = live.streamInfo
     val embeds = live.embeds
@@ -100,6 +112,14 @@ class BigscreenViewModel(app: Application) : AndroidViewModel(app) {
     private var resolveJob: Job? = null
 
     init {
+        saved.setSavedStateProvider(KEY_RESUME) {
+            val playing = _playback.value as? Playback.Native
+            if (playing == null || playing.stream.isLive) {
+                bundleOf()
+            } else {
+                bundleOf("embed" to playing.embed.hash, "position" to player.player.currentPosition)
+            }
+        }
         live.start()
         // Reload the player only when what should play actually changes
         viewModelScope.launch {
@@ -135,9 +155,13 @@ class BigscreenViewModel(app: Application) : AndroidViewModel(app) {
         return preferred ?: livePlatforms.first()
     }
 
-    /** [resumeAtMs] picks a VOD up where it was (Retry, Reload). */
-    private fun load(embed: Embed?, native: Boolean, resumeAtMs: Long = C.TIME_UNSET) {
+    /** [resumeAt] picks a VOD up where it was (Retry, Reload). */
+    private fun load(embed: Embed?, native: Boolean, resumeAt: Long = C.TIME_UNSET) {
         resolveJob?.cancel()
+        // Only the first embed to load after a restore; Destiny's cached stream info may come first
+        val restored = if (embed != null) resumeAfterRestore?.takeIf { it.first == embed.hash }?.second else null
+        if (embed != null) resumeAfterRestore = null
+        val resumeAtMs = if (resumeAt == C.TIME_UNSET && restored != null && restored > 0) restored else resumeAt
         if (embed == null) {
             player.stop()
             _playback.value = Playback.Idle
@@ -204,6 +228,20 @@ class BigscreenViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setEmbed(embed: Embed?) {
         _hashEmbed.value = embed
+        saved[KEY_EMBED_PLATFORM] = embed?.platform
+        saved[KEY_EMBED_ID] = embed?.id
+        saved[KEY_EMBED_START] = embed?.startSeconds
+    }
+
+    private fun savedEmbed(): Embed? {
+        val platform = saved.get<String>(KEY_EMBED_PLATFORM) ?: return null
+        val id = saved.get<String>(KEY_EMBED_ID) ?: return null
+        return Embed(platform, id, saved.get<Int>(KEY_EMBED_START))
+    }
+
+    private fun setForceWeb(hashes: Set<String>) {
+        _forceWeb.value = hashes
+        saved[KEY_FORCE_WEB] = ArrayList(hashes)
     }
 
     /** Opens a link from chat, a share intent or a deep link if it names something playable. */
@@ -234,6 +272,7 @@ class BigscreenViewModel(app: Application) : AndroidViewModel(app) {
         if (platforms.size < 2) return
         val next = platforms[(platforms.indexOf(c.entry.platform) + 1) % platforms.size]
         _currentPlatform.value = next
+        saved[KEY_PLATFORM] = next
         PlatformPreference.entries.firstOrNull { it.name.equals(next, ignoreCase = true) }?.let { pref ->
             graph.settings.launchUpdate(viewModelScope) { it.copy(preferredPlatform = pref) }
         }
@@ -244,10 +283,10 @@ class BigscreenViewModel(app: Application) : AndroidViewModel(app) {
         val key = embed.hash
         val usingWeb = _playback.value is Playback.Web
         if (settings.value.nativePlayer) {
-            _forceWeb.value = if (usingWeb) _forceWeb.value - key else _forceWeb.value + key
+            setForceWeb(if (usingWeb) _forceWeb.value - key else _forceWeb.value + key)
         } else {
             graph.settings.launchUpdate(viewModelScope) { it.copy(nativePlayer = true) }
-            _forceWeb.value = _forceWeb.value - key
+            setForceWeb(_forceWeb.value - key)
         }
     }
 
@@ -265,6 +304,12 @@ class BigscreenViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         private const val TAG = "Bigscreen"
+        private const val KEY_EMBED_PLATFORM = "embedPlatform"
+        private const val KEY_EMBED_ID = "embedId"
+        private const val KEY_EMBED_START = "embedStart"
+        private const val KEY_PLATFORM = "platform"
+        private const val KEY_FORCE_WEB = "forceWeb"
+        private const val KEY_RESUME = "resume"
         /** Automatic choice favours platforms that play natively without ads. */
         val AUTO_ORDER = listOf("kick", "youtube", "twitch", "rumble", "facebook")
     }
