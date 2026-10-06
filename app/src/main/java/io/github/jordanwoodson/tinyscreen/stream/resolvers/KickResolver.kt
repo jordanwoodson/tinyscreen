@@ -19,7 +19,7 @@ class KickResolver : StreamResolver {
         }
         checkNotChallenge(body)
         val data = Http.json.parseToJsonElement(body)["data"]
-        val url = data["playback_url"].string ?: throw IllegalStateException("$slug is offline")
+        val url = data["playback_url"].string ?: throw StreamOfflineException(slug)
         return ResolvedStream(
             url = url,
             kind = StreamKind.Hls,

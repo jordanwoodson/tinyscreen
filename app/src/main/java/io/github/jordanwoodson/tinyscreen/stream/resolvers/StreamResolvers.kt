@@ -14,6 +14,9 @@ interface StreamResolver {
     suspend fun resolve(embed: Embed): ResolvedStream
 }
 
+/** The platform says the channel isn't live (as opposed to failing to answer). */
+open class StreamOfflineException(channel: String) : Exception("$channel is offline")
+
 class StreamResolvers(private val resolvers: List<StreamResolver>) {
     fun supports(embed: Embed): Boolean = resolvers.any { embed.platform in it.platforms }
 

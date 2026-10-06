@@ -12,7 +12,10 @@ import io.github.jordanwoodson.tinyscreen.stream.Hosting
 import io.github.jordanwoodson.tinyscreen.stream.LinkParser
 import io.github.jordanwoodson.tinyscreen.stream.StreamEntry
 import io.github.jordanwoodson.tinyscreen.stream.TopEmbed
+import io.github.jordanwoodson.tinyscreen.stream.resolvers.StreamOfflineException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -139,15 +142,30 @@ class BigscreenViewModel(app: Application) : AndroidViewModel(app) {
             _playback.value = Playback.Web(embed, web)
             return
         }
-        _playback.value = Playback.Resolving(embed)
+        val resolving = Playback.Resolving(embed)
+        _playback.value = resolving
         resolveJob = viewModelScope.launch {
-            val result = runCatching { graph.resolvers.resolve(embed) }
+            val result = try {
+                Result.success(graph.resolvers.resolve(embed))
+            } catch (e: CancellationException) {
+                // Superseded by another stream: it owns the player now
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+            ensureActive()
+            if (_playback.value !== resolving) return@launch
             val stream = result.getOrNull()
             when {
                 stream != null -> {
                     // "Block ads" off: play Twitch playlists untouched
                     player.play(if (settings.value.adblock) stream else stream.copy(rewriter = null))
                     _playback.value = Playback.Native(embed, stream)
+                }
+                result.exceptionOrNull() is StreamOfflineException -> {
+                    // The channel's own page would only show its offline banner
+                    player.stop()
+                    _playback.value = Playback.Failed(embed, "${embed.displayId} is offline on ${embed.platformName}")
                 }
                 web != null -> {
                     result.exceptionOrNull()?.let { Log.w(TAG, "native playback failed for ${embed.hash}", it) }

@@ -111,7 +111,7 @@ class TwitchResolver : StreamResolver {
     }
 }
 
-class TwitchOfflineException(login: String) : Exception("$login is offline")
+class TwitchOfflineException(login: String) : StreamOfflineException(login)
 
 data class TwitchVariant(val url: String, val width: Int, val height: Int, val frameRate: Float) {
     val pixels get() = width * height
