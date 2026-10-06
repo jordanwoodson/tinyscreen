@@ -209,6 +209,7 @@ class ChatRepository(
         scope.launch {
             if (wanted) return@launch
             wanted = true
+            stopReconnecting = false
             assets.loadCached()
             refreshAssets()
             if (assets.emotes.value.byPrefix.isEmpty()) {
@@ -255,15 +256,31 @@ class ChatRepository(
         }
     }
 
+    /** Reconnects now, if chat is meant to be connected (not while web chat or the background idle has it off). */
     fun reconnect() {
         scope.launch {
-            wanted = true
+            if (!wanted) return@launch
             stopReconnecting = false
             attempts = 0
             reconnectJob?.cancel()
             val old = socket
             socket = null
             old?.close(1000, null)
+            connect()
+        }
+    }
+
+    /** The phone is back online after a dead zone: reconnect now instead of waiting out the backoff. */
+    fun onNetworkRestored() {
+        scope.launch {
+            if (assets.emotes.value.byPrefix.isEmpty() || assets.flairs.value.isEmpty()) refreshAssets(restart = true)
+            if (!wanted || stopReconnecting) return@launch
+            attempts = 0
+            reconnectJob?.cancel()
+            // Any socket from before the network dropped is dead, even if OkHttp hasn't noticed yet
+            val old = socket
+            socket = null
+            old?.cancel()
             connect()
         }
     }
@@ -281,6 +298,8 @@ class ChatRepository(
                 scope.launch {
                     if (socket !== webSocket) return@launch
                     openedAt = System.currentTimeMillis()
+                    // A "too many connections" or ban from an earlier session shouldn't stop later retries
+                    stopReconnecting = false
                     _status.value = ConnectionStatus.Connected
                 }
             }
@@ -362,8 +381,16 @@ class ChatRepository(
             .onFailure { Log.w(TAG, "failed to handle $event", it) }
     }
 
+    private val seenEvents = LinkedHashSet<String>()
+
     private fun handle(event: String, p: JsonElement, rawPayload: String, history: Boolean) {
         val o = p as? JsonObject
+        // The backlog is replayed on every connect: don't add the same donation or mute line again
+        eventKey(event, p)?.let { key ->
+            val fresh = seenEvents.add(key)
+            if (seenEvents.size > 500) seenEvents.iterator().let { it.next(); it.remove() }
+            if (!fresh && history) return
+        }
         when (event) {
             "PING" -> socket?.send("PONG $rawPayload")
             "PONG" -> Unit
@@ -1355,6 +1382,23 @@ class ChatRepository(
         private val POLL_OPEN_QUESTION = Regex("^(how|why|when|what|where)\\b", RegexOption.IGNORE_CASE)
 
         fun validNick(nick: String) = NICK.matches(nick)
+
+        /** Events the backlog replays that add a line or chip, besides MSG (deduped by its hash). */
+        private val REPLAYED = setOf(
+            "BROADCAST", "MUTE", "UNMUTE", "BAN", "UNBAN", "SUBONLY", "DEATH", "SUBSCRIPTION", "GIFTSUB", "MASSGIFT",
+            "DONATION", "XPOST", "SPOTLIGHT", "ADDPHRASE", "REMOVEPHRASE", "VESTABOARD_LEAD", "VESTABOARD_HOURLY", "VESTABOARD_RESET",
+        )
+
+        /** Identifies a replayable event by type plus uuid or timestamp; null when it can't be told apart. */
+        fun eventKey(event: String, payload: JsonElement): String? {
+            if (event !in REPLAYED) return null
+            val o = payload as? JsonObject ?: return null
+            fun field(name: String) = (o[name] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.contentOrNull
+            val uuid = field("uuid")
+            val timestamp = field("timestamp")
+            if (uuid == null && timestamp == null) return null
+            return listOf(event, uuid.orEmpty(), timestamp.orEmpty(), field("nick").orEmpty(), field("data").orEmpty()).joinToString("|")
+        }
 
         /** "10m" → nanoseconds, default unit seconds. */
         fun parseDurationNanos(value: String): Long? {

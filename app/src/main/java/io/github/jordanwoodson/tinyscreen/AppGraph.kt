@@ -96,5 +96,13 @@ class AppGraph(val app: Application) {
         }
         // Whisper and mention notifications, from the socket or a background check once it idles
         chatNotifications.start()
+        // Back online after a dead zone: reconnect chat now rather than after up to a minute of backoff
+        scope.launch {
+            var wasOnline = network.online.value
+            network.online.collect { online ->
+                if (online && !wasOnline) chat.onNetworkRestored()
+                wasOnline = online
+            }
+        }
     }
 }

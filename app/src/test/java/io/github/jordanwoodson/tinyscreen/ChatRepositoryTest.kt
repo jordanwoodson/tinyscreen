@@ -11,8 +11,11 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -51,6 +54,39 @@ class ChatRepositoryTest {
     fun signedOutTextIsKeptForAfterLogin() = runBlocking {
         assertFalse(chat.submit("first message"))
         assertEquals("first message", app.getSharedPreferences(ChatRepository.PREFS, 0).getString("pre_login_text", null))
+    }
+
+    @Test
+    fun aReplayedBacklogDoesNotRepeatEvents() = runBlocking {
+        fun quoted(frame: String) = "\"" + frame.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+        val frames = listOf(
+            msg("alice", "hello", 1_000),
+            """DEATH {"id":5,"nick":"Mechakitty","roles":[],"features":[],"timestamp":1791303747056,"duration":600,"data":"yumped too hard"}""",
+            """MUTE {"nick":"Bot","data":"spammer","timestamp":1791303748000,"duration":600}""",
+            """DONATION {"uuid":"d-1","user":{"nick":"generous"},"amount":500,"timestamp":1791303749000,"expirationTimestamp":1791303809000,"data":"hi"}""",
+        )
+        val history = "HISTORY [" + frames.joinToString(",") { quoted(it) } + "]"
+        chat.receive(history)
+        val first = chat.lines.value.size
+        assertEquals(4, first)
+        // Every reconnect replays the same backlog
+        chat.receive(history)
+        chat.receive(history)
+        assertEquals(first, chat.lines.value.size)
+        // A new event with the same shape but a new time still shows
+        chat.receive("""MUTE {"nick":"Bot","data":"spammer","timestamp":1791303999000,"duration":600}""")
+        assertEquals(first + 1, chat.lines.value.size)
+    }
+
+    @Test
+    fun eventsAreToldApartByTypeAndTime() {
+        val a = Json.parseToJsonElement("""{"nick":"Bot","data":"x","timestamp":1}""")
+        val b = Json.parseToJsonElement("""{"nick":"Bot","data":"x","timestamp":2}""")
+        assertEquals(ChatRepository.eventKey("MUTE", a), ChatRepository.eventKey("MUTE", a))
+        assertNotEquals(ChatRepository.eventKey("MUTE", a), ChatRepository.eventKey("MUTE", b))
+        assertNotEquals(ChatRepository.eventKey("MUTE", a), ChatRepository.eventKey("BAN", a))
+        assertNull("MSG has its own hash", ChatRepository.eventKey("MSG", a))
+        assertNull("nothing to tell it apart by", ChatRepository.eventKey("MUTE", Json.parseToJsonElement("""{"data":"x"}""")))
     }
 
     @Test
