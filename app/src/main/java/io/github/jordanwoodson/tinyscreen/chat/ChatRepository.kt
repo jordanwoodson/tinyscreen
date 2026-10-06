@@ -159,8 +159,13 @@ class ChatRepository(
             if (wanted) return@launch
             wanted = true
             assets.loadCached()
-            appScope.launch { assets.refresh() }
-            connect()
+            if (assets.emotes.value.byPrefix.isEmpty()) {
+                // First run: history is formatted on arrival, so get emotes before connecting
+                kotlinx.coroutines.withTimeoutOrNull(6_000) { assets.refresh() }
+            } else {
+                appScope.launch { assets.refresh() }
+            }
+            if (wanted) connect()
         }
     }
 
