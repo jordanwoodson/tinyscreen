@@ -359,6 +359,7 @@ class ChatRepository(
             error("notconnected")
             return false
         }
+        lastSendWasWhisper = false
         return s.send("$event $payload")
     }
 
@@ -444,7 +445,11 @@ class ChatRepository(
             }
             "MSG" -> o?.let { onMessage(it, history) }
             "PRIVMSG" -> o?.let { onWhisper(it, history) }
-            "PRIVMSGSENT" -> info(InfoKind.Info, "Your message has been sent.")
+            "PRIVMSGSENT" -> pendingWhispers.removeFirstOrNull()?.let { sent ->
+                // Confirmed in the conversation; only a /w from main chat gets a line there
+                markWhisper(sent, WhisperState.Sent, null)
+                if (!sent.fromDm) info(InfoKind.Info, "Your message has been sent.")
+            }
             "MUTE" -> o?.let { onModeration("muted", it, history) }
             "UNMUTE" -> o?.let { onModeration("unmuted", it, history) }
             "BAN" -> o?.let { onModeration("banned", it, history) }
@@ -707,6 +712,7 @@ class ChatRepository(
 
     private fun onError(o: JsonObject?, p: JsonElement) {
         val code = o?.get("description").str() ?: (p as? JsonPrimitive)?.contentOrNull ?: "unknown"
+        if (whisperFailed(code)) return
         // A rejected send shouldn't leave its optimistic line behind, and its text goes back in the box
         if (code in SEND_ERRORS) {
             val current = _lines.value
@@ -998,32 +1004,70 @@ class ChatRepository(
         runCatching { ChatApi.conversations(query) }.onSuccess { _conversations.value = it }
     }
 
+    private var inboxJob: Job? = null
+
     fun openWhisper(nick: String?) {
-        _openConversation.value = nick
-        _conversationMessages.value = emptyList()
-        if (nick == null) return
-        appScope.launch {
-            runCatching { ChatApi.inbox(nick) }.onSuccess { msgs ->
-                _conversationMessages.value = msgs
-                val read = _conversations.value.firstOrNull { it.username.equals(nick, ignoreCase = true) }?.unread ?: 0
-                _conversations.value = _conversations.value.map { if (it.username.equals(nick, ignoreCase = true)) it.copy(unread = 0) else it }
-                _unreadWhispers.value = (_unreadWhispers.value - read).coerceAtLeast(0)
+        scope.launch {
+            _openConversation.value = nick
+            _conversationMessages.value = emptyList()
+            _whisperNotice.value = null
+            inboxJob?.cancel()
+            inboxJob = appScope.launch {
+                if (nick != null) {
+                    // Fetching the inbox marks it read on the server
+                    val msgs = runCatching { ChatApi.inbox(nick) }.getOrNull()
+                    withContext(dispatcher) {
+                        // Opening a second conversation quickly mustn't show the first one's messages
+                        if (msgs == null || !_openConversation.value.equals(nick, ignoreCase = true)) return@withContext
+                        // Keep whispers that arrived while it loaded, and any still being sent
+                        val loaded = msgs.mapNotNullTo(HashSet()) { it.id }
+                        _conversationMessages.value = msgs + _conversationMessages.value.filter { it.id == null || it.id !in loaded }
+                        _conversations.value = _conversations.value.map { if (it.username.equals(nick, ignoreCase = true)) it.copy(unread = 0) else it }
+                    }
+                }
+                // The server's count rather than adding and subtracting, which drifted
+                ChatApi.unreadCount()?.let { _unreadWhispers.value = it }
             }
         }
     }
 
     fun sendWhisper(nick: String, text: String) {
-        scope.launch { whisper(nick, text) }
+        scope.launch { whisper(nick, text, fromDm = false) }
     }
 
-    private fun whisper(nick: String, text: String): Boolean {
+    /** Sends from the conversation screen. Returns whether it went, so a failed draft can stay put. */
+    suspend fun submitWhisper(nick: String, text: String): Boolean = withContext(dispatcher) { whisper(nick, text, fromDm = true) }
+
+    private val _whisperNotice = MutableStateFlow<String?>(null)
+    /** Why the last whisper from the conversation screen couldn't be sent. */
+    val whisperNotice: StateFlow<String?> = _whisperNotice.asStateFlow()
+
+    private class PendingWhisper(val nick: String, val text: String, val fromDm: Boolean, val at: Long)
+    private val pendingWhispers = ArrayDeque<PendingWhisper>()
+    /** Whether the last frame sent was a whisper, so an error that follows belongs to it. */
+    private var lastSendWasWhisper = false
+
+    private fun whisper(nick: String, text: String, fromDm: Boolean): Boolean {
         val msg = text.trim()
         if (msg.isEmpty()) return false
-        if (!validNick(nick)) return info(InfoKind.Error, "Invalid nick - /msg nick message").let { false }
-        if (nick.equals(_me.value?.nick, ignoreCase = true)) return info(InfoKind.Error, "Cannot send a message to yourself").let { false }
+        val problem = when {
+            !validNick(nick) -> "Invalid nick - /msg nick message"
+            nick.equals(_me.value?.nick, ignoreCase = true) -> "Cannot send a message to yourself"
+            socket == null || _status.value != ConnectionStatus.Connected -> ERRORS.getValue("notconnected")
+            else -> null
+        }
+        if (problem != null) {
+            if (fromDm) _whisperNotice.value = problem else info(InfoKind.Error, problem)
+            return false
+        }
         if (!sendRaw("PRIVMSG", buildJsonObject { put("nick", nick); put("data", msg) })) return false
+        lastSendWasWhisper = true
+        _whisperNotice.value = null
+        pendingWhispers.addLast(PendingWhisper(nick, msg, fromDm, now()))
+        while (pendingWhispers.size > 20) pendingWhispers.removeFirst()
         if (_openConversation.value.equals(nick, ignoreCase = true)) {
-            _conversationMessages.value = _conversationMessages.value + WhisperMessage(null, _me.value?.nick.orEmpty(), nick, msg, now())
+            _conversationMessages.value = _conversationMessages.value +
+                WhisperMessage(null, _me.value?.nick.orEmpty(), nick, msg, now(), state = WhisperState.Sending)
         }
         val existing = _conversations.value.firstOrNull { it.username.equals(nick, ignoreCase = true) }
         _conversations.value = listOf(Conversation(existing?.userId, existing?.username ?: nick, msg, now(), 0, true)) +
@@ -1031,7 +1075,22 @@ class ChatRepository(
         return true
     }
 
-    // --- Sending ---
+    private fun markWhisper(sent: PendingWhisper, state: WhisperState, error: String?) {
+        if (!_openConversation.value.equals(sent.nick, ignoreCase = true)) return
+        val list = _conversationMessages.value
+        val idx = list.indexOfFirst { it.state == WhisperState.Sending && it.text == sent.text }
+        if (idx >= 0) _conversationMessages.value = list.toMutableList().also { it[idx] = it[idx].copy(state = state, error = error) }
+    }
+
+    /** An error right after a whisper is about the whisper: show it in the conversation, not main chat. */
+    private fun whisperFailed(code: String): Boolean {
+        if (!lastSendWasWhisper) return false
+        val sent = pendingWhispers.firstOrNull()?.takeIf { now() - it.at < 15_000 } ?: return false
+        pendingWhispers.removeFirst()
+        if (!sent.fromDm) return false
+        markWhisper(sent, WhisperState.Failed, ERRORS[code] ?: code)
+        return true
+    }
 
     /** Sends a line or runs a command without waiting for the result. */
     fun send(input: String) {
@@ -1170,7 +1229,7 @@ class ChatRepository(
                 val nick = args.getOrNull(0)
                 val msg = rest.trim().substringAfter(' ', "").trim()
                 if (nick == null || msg.isEmpty()) return info(InfoKind.Error, "Invalid nick - /msg nick message")
-                whisper(nick, msg)
+                whisper(nick, msg, fromDm = false)
             }
             "R", "REPLY" -> {
                 val target = lastWhisperer ?: (_lines.value.lastOrNull { it is ChatLine.User && it.user.key != me?.key } as? ChatLine.User)?.user?.nick
@@ -1337,12 +1396,22 @@ class ChatRepository(
             withContext(Dispatchers.IO) {
                 runCatching { Http.getString("https://www.destiny.gg/logout") }
             }
-            WebViewCookieJar.clearAll {
+            // Only destiny.gg's cookies: the Kick and Twitch logins live in the same store
+            WebViewCookieJar.clearDestinyGg()
+            withContext(dispatcher) {
                 _me.value = null
                 _conversations.value = emptyList()
                 _unreadWhispers.value = 0
-                reconnect()
+                _openConversation.value = null
+                _conversationMessages.value = emptyList()
+                _whisperNotice.value = null
+                pendingWhispers.clear()
+                lastWhisperer = null
+                _muteEndsAt.value = null
+                highlighters.clear()
+                prefs.edit().remove(PREF_NICK).remove("pre_login_text").apply()
             }
+            reconnect()
         }
     }
 

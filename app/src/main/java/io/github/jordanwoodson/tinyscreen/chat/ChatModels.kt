@@ -234,12 +234,17 @@ data class Conversation(
     val lastMessageFromMe: Boolean,
 )
 
+enum class WhisperState { Sending, Sent, Failed }
+
 data class WhisperMessage(
     val id: Long?,
     val from: String,
     val to: String,
     val text: String,
     val timestamp: Long,
+    val state: WhisperState = WhisperState.Sent,
+    /** Why it wasn't sent, for [WhisperState.Failed]. */
+    val error: String? = null,
 )
 
 /** Something worth a notification while the app is in the background. */

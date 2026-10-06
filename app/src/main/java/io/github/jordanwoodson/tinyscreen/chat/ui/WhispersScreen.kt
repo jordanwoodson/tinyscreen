@@ -41,11 +41,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.jordanwoodson.tinyscreen.TinyscreenApp
+import io.github.jordanwoodson.tinyscreen.chat.WhisperState
 import io.github.jordanwoodson.tinyscreen.ui.fromNow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -141,6 +143,7 @@ fun WhispersScreen(onBack: () -> Unit) {
             }
         } else {
             val messages by chat.conversationMessages.collectAsState()
+            val notice by chat.whisperNotice.collectAsState()
             var draft by remember(nick) { mutableStateOf("") }
             val listState = rememberLazyListState()
             LaunchedEffect(messages.size) { if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex) }
@@ -167,15 +170,27 @@ fun WhispersScreen(onBack: () -> Unit) {
                                     )
                                     .padding(horizontal = 12.dp, vertical = 8.dp),
                             ) {
-                                Text(m.text)
+                                Text(m.text, modifier = Modifier.alpha(if (m.state == WhisperState.Sending) 0.6f else 1f))
                                 Text(
-                                    DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(m.timestamp)),
+                                    when (m.state) {
+                                        WhisperState.Sending -> "Sending…"
+                                        WhisperState.Failed -> "Not sent: ${m.error ?: "unknown error"}"
+                                        WhisperState.Sent -> DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(m.timestamp))
+                                    },
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    color = if (m.state == WhisperState.Failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                         }
                     }
+                }
+                notice?.let {
+                    Text(
+                        it,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                    )
                 }
                 Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(
@@ -187,8 +202,8 @@ fun WhispersScreen(onBack: () -> Unit) {
                     )
                     IconButton(onClick = {
                         val text = draft
-                        draft = ""
-                        scope.launch { chat.sendWhisper(nick, text) }
+                        // Cleared only once it's on its way
+                        scope.launch { if (chat.submitWhisper(nick, text) && draft == text) draft = "" }
                     }) { Icon(Icons.AutoMirrored.Filled.Send, "Send") }
                 }
             }
