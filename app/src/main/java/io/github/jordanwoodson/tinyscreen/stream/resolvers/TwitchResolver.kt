@@ -26,41 +26,42 @@ class TwitchResolver : StreamResolver {
 
     override suspend fun resolve(embed: Embed): ResolvedStream = withContext(Dispatchers.IO) {
         when (embed.platform) {
-            "twitch" -> resolveLive(embed.id.lowercase())
+            "twitch" -> resolveLive(embed)
             "twitch-vod" -> resolveVod(embed)
             else -> resolveClip(embed.id)
         }
     }
 
-    private suspend fun resolveLive(login: String): ResolvedStream {
+    private fun resolveLive(embed: Embed): ResolvedStream {
+        val login = embed.id.lowercase()
         // Pre-flight: start on the first player type whose playlist has no preroll
-        var chosen: String? = null
-        var fallback: String? = null
+        var chosen: TwitchMaster? = null
+        var fallback: TwitchMaster? = null
         for (type in PLAYER_TYPES) {
             val master = runCatching { Twitch.liveMaster(login, type) }.getOrElse {
                 if (it is TwitchOfflineException) throw it
                 null
             } ?: continue
             if (fallback == null) fallback = master
-            val variant = Twitch.variants(master).maxByOrNull { it.pixels }?.url ?: continue
+            val variant = master.variants.maxByOrNull { it.pixels }?.url ?: continue
             val media = runCatching { Twitch.fetch(variant) }.getOrNull() ?: continue
             if (!TwitchAds.hasAds(media)) {
                 chosen = master
                 break
             }
         }
-        val masterText = chosen ?: fallback ?: error("Couldn't load $login's stream")
+        val master = chosen ?: fallback ?: error("Couldn't load $login's stream")
         val filter = TwitchAdFilter(login)
-        filter.learnMaster(masterText)
+        filter.learnMaster(master.text)
         return ResolvedStream(
-            url = Twitch.lastMasterUrl[masterText] ?: error("no master url"),
+            url = master.url,
             kind = StreamKind.Hls,
             isLive = true,
             subtitle = "$login · Twitch",
             artworkUrl = "https://static-cdn.jtvnw.net/previews-ttv/live_user_$login-640x360.jpg",
             rewriter = filter,
             liveTargetOffsetMs = 5_000,
-            refresh = { resolveLive(login) },
+            refresh = { resolve(embed) },
         )
     }
 
@@ -79,7 +80,7 @@ class TwitchResolver : StreamResolver {
             isLive = false,
             subtitle = "Twitch VOD",
             startPositionMs = embed.startSeconds?.let { it * 1000L } ?: androidx.media3.common.C.TIME_UNSET,
-            refresh = { resolveVod(embed) },
+            refresh = { resolve(embed) },
         )
     }
 
@@ -116,13 +117,15 @@ data class TwitchVariant(val url: String, val width: Int, val height: Int, val f
     val pixels get() = width * height
 }
 
+/** A live master playlist and the URL it came from (its token and playlist session). */
+class TwitchMaster(val playerType: String, val url: String, val text: String) {
+    val variants: List<TwitchVariant> by lazy { Twitch.variants(text) }
+}
+
 internal object Twitch {
     const val CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"
     const val PAT_HASH = "ed230aa1e33e07eebb8928504583da78a5173989fadfb1ac94be06a04f3cdbe9"
     const val CLIP_HASH = "993d9a5131f15a37bd16f32342c44ed1e0b1a9b968c6afdb662d2cddd595f6c5"
-
-    /** Master playlist text → the URL it was fetched from. */
-    val lastMasterUrl = ConcurrentHashMap<String, String>()
 
     fun gql(body: String): String {
         val req = Request.Builder()
@@ -170,16 +173,14 @@ internal object Twitch {
             .addQueryParameter("supported_codecs", "h264").build().toString()
     }
 
-    /** Fetches a live master playlist (text) for a player type. */
-    fun liveMaster(login: String, playerType: String): String {
+    /** Fetches a live master playlist for a player type. */
+    fun liveMaster(login: String, playerType: String): TwitchMaster {
         val url = liveMasterUrl(login, playerType)
         val req = Request.Builder().url(url).header("User-Agent", Http.DESKTOP_UA).build()
         Http.client.newCall(req).execute().use { resp ->
             if (resp.code == 404) throw TwitchOfflineException(login)
             if (!resp.isSuccessful) error("usher HTTP ${resp.code}")
-            val text = resp.body!!.string()
-            lastMasterUrl[text] = url
-            return text
+            return TwitchMaster(playerType, url, resp.body!!.string())
         }
     }
 
@@ -258,7 +259,7 @@ object TwitchAds {
  */
 class TwitchAdFilter(private val login: String) : PlaylistRewriter {
     private val variantInfo = ConcurrentHashMap<String, TwitchVariant>()
-    private val backupMasters = ConcurrentHashMap<String, Pair<Long, String>>()
+    private val backupMasters = ConcurrentHashMap<String, Pair<Long, TwitchMaster>>()
 
     fun learnMaster(master: String) {
         Twitch.variants(master).forEach { variantInfo[it.url] = it }
@@ -291,7 +292,7 @@ class TwitchAdFilter(private val login: String) : PlaylistRewriter {
         val now = System.currentTimeMillis()
         val cached = backupMasters[type]?.takeIf { now - it.first < 90_000 }?.second
         val master = cached ?: Twitch.liveMaster(login, type).also { backupMasters[type] = now to it }
-        val variants = Twitch.variants(master)
+        val variants = master.variants
         val pick = if (wanted == null) {
             variants.maxByOrNull { it.pixels }
         } else {

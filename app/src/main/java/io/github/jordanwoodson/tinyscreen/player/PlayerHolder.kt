@@ -2,6 +2,7 @@ package io.github.jordanwoodson.tinyscreen.player
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -31,7 +32,9 @@ import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import io.github.jordanwoodson.tinyscreen.net.Http
 import io.github.jordanwoodson.tinyscreen.settings.Quality
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -40,6 +43,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class StreamKind { Hls, Dash, Progressive }
 
@@ -240,7 +244,16 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
             val stuck = error.cause is HlsPlaylistTracker.PlaylistStuckException
             val httpError = error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
             if ((httpError || stuck) && stream.refresh != null) {
-                val fresh = runCatching { stream.refresh.invoke() }.getOrNull()
+                val fresh = try {
+                    withContext(Dispatchers.IO) { stream.refresh.invoke() }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "refresh failed: ${e.message}")
+                    null
+                }
+                // Another stream may have started while the refresh ran
+                if (_current.value !== stream) return@launch
                 if (fresh != null) {
                     val keep = retries
                     val position = player.currentPosition
@@ -366,5 +379,9 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
     fun goLive() {
         player.seekToDefaultPosition()
         player.play()
+    }
+
+    private companion object {
+        const val TAG = "PlayerHolder"
     }
 }
