@@ -170,6 +170,10 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope, private 
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
 
+    /** Changes when a different stream starts, not on token refreshes, so the video surface only resets then. */
+    private val _surfaceKey = MutableStateFlow(0)
+    val surfaceKey: StateFlow<Int> = _surfaceKey.asStateFlow()
+
     private var defaultQuality = Quality.AUTO
     private var qualityPickedByHand = false
 
@@ -270,6 +274,9 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope, private 
             qualityPickedByHand = false
             _selectedQuality.value = null
             applyQuality(defaultQuality)
+            _surfaceKey.value++
+            // A VOD's speed doesn't carry into live, where the speed control is usually hidden
+            if (stream.isLive) player.setPlaybackSpeed(1f)
         }
         val source = buildSource(stream)
         player.setMediaSource(source, stream.startPositionMs)
@@ -455,16 +462,33 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope, private 
     // --- Quality ---
 
     private fun videoQualities(tracks: Tracks): List<QualityOption> {
-        val options = mutableListOf<QualityOption>()
+        val options = mutableListOf<Pair<QualityOption, String?>>()
         tracks.groups.forEach { group ->
             if (group.type != C.TRACK_TYPE_VIDEO) return@forEach
             for (i in 0 until group.length) {
                 if (!group.isTrackSupported(i)) continue
                 val f = group.getTrackFormat(i)
-                options += QualityOption(qualityLabel(f), f.height, f.bitrate, group.mediaTrackGroup, i)
+                options += QualityOption(qualityLabel(f), f.height, f.bitrate, group.mediaTrackGroup, i) to f.sampleMimeType
             }
         }
-        return options.distinctBy { it.label }.sortedWith(compareByDescending<QualityOption> { it.height }.thenByDescending { it.bitrate })
+        // YouTube lists VP9 1440p and 2160p beside H.264: one entry per resolution in the codec that
+        // plays now, and the codec named where only another has it, since picking that switches codec
+        val playing = player.videoFormat?.sampleMimeType ?: MimeTypes.VIDEO_H264
+        val mixed = options.any { it.second == playing } && options.any { it.second != playing }
+        return options.groupBy { it.first.label }
+            .map { (label, same) ->
+                same.firstOrNull { it.second == playing }?.first
+                    ?: same.first().let { (option, mime) -> if (mixed) option.copy(label = "$label · ${codecName(mime)}") else option }
+            }
+            .sortedWith(compareByDescending<QualityOption> { it.height }.thenByDescending { it.bitrate })
+    }
+
+    private fun codecName(mime: String?): String = when (mime) {
+        MimeTypes.VIDEO_VP9 -> "VP9"
+        MimeTypes.VIDEO_AV1 -> "AV1"
+        MimeTypes.VIDEO_H265 -> "HEVC"
+        MimeTypes.VIDEO_H264 -> "H.264"
+        else -> mime?.substringAfter('/')?.uppercase() ?: "other codec"
     }
 
     private fun qualityLabel(f: Format): String {

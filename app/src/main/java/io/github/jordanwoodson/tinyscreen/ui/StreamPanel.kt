@@ -2,6 +2,7 @@ package io.github.jordanwoodson.tinyscreen.ui
 
 import androidx.annotation.DrawableRes
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -324,8 +325,9 @@ fun TopEmbedsRow(embeds: List<TopEmbed>, current: Embed?, onSelect: (Embed) -> U
 fun OfflinePanel(vod: LatestVod?, onOpenVod: (String) -> Unit, modifier: Modifier = Modifier) {
     BoxWithConstraints(modifier.background(Color(0xFF18428D))) {
         val desat = remember { ColorMatrix().apply { setToSaturation(0.3f) } }
-        AsyncImage(
-            model = "https://cdn.destiny.gg/img/sleeping-destiny.17854cf060db26b0dbd9.png",
+        // Bundled: the site's copy has a hashed file name that changes with each of their deploys
+        Image(
+            painter = painterResource(R.drawable.sleeping_destiny),
             contentDescription = "Destiny is offline",
             colorFilter = ColorFilter.colorMatrix(desat),
             modifier = Modifier.align(Alignment.Center).width(minOf(360.dp, maxWidth / 2)).aspectRatio(1f),

@@ -3,6 +3,7 @@ package io.github.jordanwoodson.tinyscreen.player
 import android.app.Activity
 import android.content.Context
 import android.media.AudioManager
+import android.view.WindowManager
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -67,6 +68,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -152,6 +154,8 @@ fun VideoPlayer(
     }
 
     val context = LocalContext.current
+    // The swipe-to-dim gesture only exists in fullscreen; hand brightness back to the system after
+    DisposableEffect(isFullscreen) { onDispose { resetBrightness(context) } }
     Box(
         modifier
             .background(Color.Black)
@@ -212,9 +216,9 @@ fun VideoPlayer(
                 },
             ),
     ) {
-        val stream by holder.current.collectAsState()
+        val surfaceKey by holder.surfaceKey.collectAsState()
         // A fresh surface per stream keeps a new aspect ratio from inheriting the old buffer size
-        androidx.compose.runtime.key(stream?.url) {
+        androidx.compose.runtime.key(surfaceKey) {
             ContentFrame(
                 player = holder.player,
                 modifier = Modifier.fillMaxSize(),
@@ -552,7 +556,7 @@ private fun PlayerSettingsSheet(holder: PlayerHolder, state: PlayerUiState, onDi
                     else -> "${playing ?: Quality.label(active)} (default)"
                 }
                 SheetRow(Icons.Filled.HighQuality, "Quality", quality) { page = "quality" }
-                if (!state.isLive || state.canSeek) {
+                if (!state.isLive || state.canSeek || state.speed != 1f) {
                     SheetRow(Icons.Filled.Speed, "Playback speed", if (state.speed == 1f) "Normal" else "${state.speed}×") { page = "speed" }
                 }
                 ListItem(
@@ -624,6 +628,14 @@ private fun adjustBrightness(context: Context, delta: Float): Float {
     attrs.screenBrightness = next
     window.attributes = attrs
     return next
+}
+
+private fun resetBrightness(context: Context) {
+    val window = (context as? Activity)?.window ?: return
+    val attrs = window.attributes
+    if (attrs.screenBrightness == WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE) return
+    attrs.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+    window.attributes = attrs
 }
 
 private fun adjustVolume(context: Context, delta: Float): Float? {

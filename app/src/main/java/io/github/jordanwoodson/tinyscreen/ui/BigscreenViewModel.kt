@@ -165,7 +165,9 @@ class BigscreenViewModel(app: Application) : AndroidViewModel(app) {
             val stream = result.getOrNull()
             when {
                 stream != null -> {
-                    player.play(if (stream.isLive || resumeAtMs == C.TIME_UNSET) stream else stream.copy(startPositionMs = resumeAtMs))
+                    // The media notification's title, when the platform didn't give one
+                    val titled = if (stream.title != null) stream else stream.copy(title = titleFor(embed))
+                    player.play(if (titled.isLive || resumeAtMs == C.TIME_UNSET) titled else titled.copy(startPositionMs = resumeAtMs))
                     _playback.value = Playback.Native(embed, stream)
                 }
                 result.exceptionOrNull() is StreamOfflineException -> {
@@ -185,6 +187,17 @@ class BigscreenViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+    }
+
+    private fun titleFor(embed: Embed): String {
+        val c = content.value
+        val title = when (c) {
+            is Content.Embedded -> c.meta?.metadata?.title ?: c.meta?.metadata?.displayName
+            is Content.Host -> c.hosting.title ?: c.hosting.displayName
+            is Content.Live -> c.entry.statusText
+            Content.Offline -> null
+        }
+        return title?.takeIf { c.embed == embed && it.isNotBlank() } ?: embed.displayId
     }
 
     // --- Actions ---
