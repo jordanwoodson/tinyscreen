@@ -1,0 +1,65 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Weekly dependency PRs for Tinyscreen. Merging one to main publishes a release, so related libraries are grouped into one PR each.",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigestsToSemver"],
+  "schedule": ["before 6am on monday"],
+  "semanticCommits": "disabled",
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "description": "AndroidX libraries; Compose and Media3 get their own groups below",
+      "matchPackageNames": ["/^androidx\\./"],
+      "groupName": "AndroidX"
+    },
+    {
+      "description": "Compose: the BOM sets the version of every Compose library",
+      "matchPackageNames": ["/^androidx\\.compose[.:]/"],
+      "groupName": "Compose"
+    },
+    {
+      "description": "Media3 modules must all be on the same version",
+      "matchPackageNames": ["/^androidx\\.media3[.:]/"],
+      "groupName": "Media3"
+    },
+    {
+      "description": "Kotlin: the compiler and its Compose and serialization plugins share one version",
+      "matchPackageNames": ["/^org\\.jetbrains\\.kotlin[.:]/"],
+      "groupName": "Kotlin"
+    },
+    {
+      "description": "kotlinx libraries (coroutines, serialization)",
+      "matchPackageNames": ["/^org\\.jetbrains\\.kotlinx[.:]/"],
+      "groupName": "kotlinx"
+    },
+    {
+      "description": "Coil modules must all be on the same version",
+      "matchPackageNames": ["/^io\\.coil-kt/"],
+      "groupName": "Coil"
+    },
+    {
+      "description": "Android Gradle Plugin and Gradle together, since new AGP versions often need a newer Gradle",
+      "matchPackageNames": ["/^com\\.android\\.(application|library|tools\\.build)([.:]|$)/"],
+      "groupName": "Android Gradle Plugin and Gradle"
+    },
+    {
+      "description": "Android Gradle Plugin and Gradle together, since new AGP versions often need a newer Gradle",
+      "matchManagers": ["gradle-wrapper"],
+      "groupName": "Android Gradle Plugin and Gradle"
+    },
+    {
+      "description": "OkHttp 5 needs compileSdk 37, which isn't installed; stay on 4.x until it is",
+      "matchPackageNames": ["/^com\\.squareup\\.okhttp3[.:]/"],
+      "allowedVersions": "/^4\\./"
+    },
+    {
+      "description": "CI builds with JDK 21, matching jvmToolchain(21) in app/build.gradle.kts; change both together by hand",
+      "matchPackageNames": ["java-jdk"],
+      "allowedVersions": "/^21(\\.|$)/"
+    },
+    {
+      "description": "GitHub Actions (pinned to commit SHAs) in one PR",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions"
+    }
+  ]
+}
