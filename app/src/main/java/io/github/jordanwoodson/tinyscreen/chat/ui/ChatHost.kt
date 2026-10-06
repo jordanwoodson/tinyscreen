@@ -7,7 +7,11 @@ import android.webkit.WebView
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
@@ -56,11 +60,14 @@ private fun WebChat(onOpenEmbed: (Embed) -> Unit, onOpenUrl: (String) -> Unit, m
         }
         true
     }
-    val webView = remember {
+    // Bumped when the renderer dies, which builds a fresh WebView
+    var generation by remember { mutableIntStateOf(0) }
+    val webView = remember(generation) {
         createWebView(
             context,
             adblock = { graph.settings.settings.value.adblock },
             onNavigate = route,
+            onRenderProcessGone = { _, _ -> generation++ },
             onPageFinished = { view, _ ->
                 // "/embed <link>" changes the chat page's own hash when it isn't inside bigscreen
                 view.evaluateJavascript(
@@ -100,5 +107,7 @@ private fun WebChat(onOpenEmbed: (Embed) -> Unit, onOpenUrl: (String) -> Unit, m
         }
     }
     DisposableEffect(webView) { onDispose { webView.destroy() } }
-    AndroidView(factory = { webView }, modifier = modifier)
+    key(webView) {
+        AndroidView(factory = { webView }, modifier = modifier)
+    }
 }

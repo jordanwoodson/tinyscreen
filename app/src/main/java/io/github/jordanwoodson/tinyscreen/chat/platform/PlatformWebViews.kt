@@ -213,6 +213,7 @@ class PlatformWebViews(private val app: Context) {
             adblock = { adblock },
             userAgent = Http.MOBILE_UA,
             onNavigate = { uri -> route(tab, uri.toString(), newWindow = false) },
+            onRenderProcessGone = { gone, parent -> recoverRenderer(tab, gone, parent) },
             chrome = object : WebChromeClient() {
                 override fun onCreateWindow(view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message): Boolean {
                     // target=_blank links: read the URL from a throwaway WebView, then route it
@@ -234,6 +235,16 @@ class PlatformWebViews(private val app: Context) {
             loadUrl(tab.chatUrl)
         }
         return Kept(tab, view, context)
+    }
+
+    /** A fresh WebView for the tab, in the container the dead one sat in. */
+    private fun recoverRenderer(tab: ChatTab.Platform, gone: WebView, parent: ViewGroup?) {
+        val old = kept[tab.key]?.takeIf { it.view === gone } ?: return
+        val fresh = create(tab)
+        fresh.context.baseContext = old.context.baseContext
+        old.context.baseContext = app
+        kept[tab.key] = fresh
+        parent?.addView(fresh.view, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
     }
 
     /** True when the navigation was handled outside the chat WebView. */

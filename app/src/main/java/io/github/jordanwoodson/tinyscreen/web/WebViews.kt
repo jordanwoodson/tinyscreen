@@ -9,7 +9,9 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.view.View
 import android.view.ViewGroup
+import android.util.Log
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -43,6 +45,11 @@ fun createWebView(
     onNavigate: ((Uri) -> Boolean)? = null,
     onPageFinished: ((WebView, String) -> Unit)? = null,
     chrome: WebChromeClient? = null,
+    /**
+     * The renderer crashed or Android killed it for memory. The dead WebView has already been removed
+     * from [parent] and destroyed; put a fresh one there to recover. Without this, the app would crash.
+     */
+    onRenderProcessGone: ((gone: WebView, parent: ViewGroup?) -> Unit)? = null,
 ): WebView = WebView(context).apply {
     layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
     setBackgroundColor(android.graphics.Color.BLACK)
@@ -76,6 +83,16 @@ fun createWebView(
             if (adblock()) view.evaluateJavascript(AdBlocker.cosmeticScript, null)
             CookieManager.getInstance().flush()
             onPageFinished?.invoke(view, url)
+        }
+
+        override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+            // Every WebView in the app shares one renderer, so they all get this together
+            Log.w("WebViews", "renderer gone (crashed: ${detail.didCrash()})")
+            val parent = view.parent as? ViewGroup
+            parent?.removeView(view)
+            view.destroy()
+            onRenderProcessGone?.invoke(view, parent)
+            return true
         }
     }
     webChromeClient = chrome ?: WebChromeClient()
@@ -137,6 +154,10 @@ class WebEmbedHolder(app: Application) : AndroidViewModel(app) {
     private var loadedUrl: String? = null
     private var onOpenUrl: ((String) -> Unit)? = null
     private var onFullscreen: ((View?) -> Unit)? = null
+    private var frame: FrameLayout? = null
+    private var inBackground = false
+    /** An embed that lost its renderer while the app was in the background; reloaded on return. */
+    private var reloadOnForeground: String? = null
 
     /** Whether the player frames report their playback state; without it, a loaded player counts as playing. */
     private var reportsMedia = false
@@ -180,6 +201,7 @@ class WebEmbedHolder(app: Application) : AndroidViewModel(app) {
             true
         },
         chrome = chrome,
+        onRenderProcessGone = { gone, _ -> if (gone === webView) recoverRenderer() },
     ).also { view ->
         webView = view
         if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) &&
@@ -219,6 +241,24 @@ class WebEmbedHolder(app: Application) : AndroidViewModel(app) {
         view.loadDataWithBaseURL("$DGG_ORIGIN/bigscreen", iframeHtml(embedUrl), "text/html", "utf-8", null)
     }
 
+    private fun recoverRenderer() {
+        val url = loadedUrl
+        webView = null
+        cosmeticScript = null
+        reportsMedia = false
+        loadedUrl = null
+        exitFullscreen()
+        frame?.let { attachTo(it) }
+        // Reloading in the background would start the embed playing out of sight
+        if (inBackground) {
+            reloadOnForeground = url
+            frames.clear()
+            _playing.value = false
+        } else {
+            show(url)
+        }
+    }
+
     /** Follows the Block ads setting; a change applies from the next embed loaded. */
     private fun syncCosmeticScript(view: WebView) {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
@@ -244,23 +284,31 @@ class WebEmbedHolder(app: Application) : AndroidViewModel(app) {
 
     /** The app went to the background (not into picture-in-picture): a web player can't keep playing there. */
     fun onBackground() {
+        inBackground = true
         pause()
         webView?.onPause()
     }
 
     fun onForeground() {
+        inBackground = false
         webView?.onResume()
+        reloadOnForeground?.let { url ->
+            reloadOnForeground = null
+            if (loadedUrl == null) show(url)
+        }
     }
 
     fun exitFullscreen() = chrome.exit()
 
     internal fun attachTo(frame: FrameLayout) {
+        this.frame = frame
         val view = view()
         (view.parent as? ViewGroup)?.removeView(view)
         frame.addView(view)
     }
 
     internal fun detachFrom(frame: FrameLayout) {
+        if (this.frame === frame) this.frame = null
         webView?.let { if (it.parent === frame) frame.removeView(it) }
     }
 
