@@ -19,24 +19,33 @@ class NetworkMonitor(context: Context) {
     private val _metered = MutableStateFlow(connectivity.isActiveNetworkMetered)
     val metered: StateFlow<Boolean> = _metered.asStateFlow()
 
-    /** True while there is a default network. Collect the false → true edges to retry after a dead zone. */
-    private val _online = MutableStateFlow(connectivity.activeNetwork != null)
+    /**
+     * True while the default network reaches the internet (Android has validated it). Collect the
+     * false → true edges to retry after a dead zone: a network that has only just connected often
+     * can't resolve names yet, so retrying on connect alone would fail and back off.
+     */
+    private val _online = MutableStateFlow(
+        connectivity.activeNetwork?.let(connectivity::getNetworkCapabilities)?.let(::reachesInternet) == true,
+    )
     val online: StateFlow<Boolean> = _online.asStateFlow()
 
     init {
         connectivity.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                _online.value = true
-            }
-
+            // For the default network this means there's none left: a replacement arrives through
+            // onCapabilitiesChanged instead, and activeNetwork can still name the lost one here
             override fun onLost(network: Network) {
-                _online.value = connectivity.activeNetwork != null
+                _online.value = false
             }
 
             override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                _online.value = reachesInternet(caps)
                 _metered.value = !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) &&
                     !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_TEMPORARILY_NOT_METERED)
             }
         })
     }
+
+    private fun reachesInternet(caps: NetworkCapabilities): Boolean =
+        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
 }

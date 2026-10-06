@@ -376,7 +376,10 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope, private 
         if (network && !online.value) {
             _recovery.value = Recovery.WaitingForNetwork
             retryJob = scope.launch {
-                online.first { it }
+                // Some networks never pass Android's internet check; try now and then anyway
+                withTimeoutOrNull(60_000) { online.first { it } }
+                // Back online: start the backoff over rather than waiting out the dead zone's
+                retries = 0
                 retry(stream, error)
             }
             return

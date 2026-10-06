@@ -125,8 +125,24 @@ fun PlatformChatPager(
     val pager = rememberPagerState(initialPage = tabs.indexOfFirst { it.key == model.selectedKey }.coerceAtLeast(0)) {
         currentTabs.size
     }
+    val currentOther by rememberUpdatedState(computed.otherStream)
     LaunchedEffect(pager) {
-        snapshotFlow { currentTabs.getOrNull(pager.currentPage)?.key }.collect { key -> if (key != null) model.selectedKey = key }
+        snapshotFlow { currentTabs.getOrNull(pager.currentPage)?.key }.collect { key ->
+            if (key == null) return@collect
+            // When the selected tab disappeared (bigscreen switched streams), the pager landing on a
+            // neighbour isn't the user's choice
+            val chosen = currentTabs.any { it.key == model.selectedKey }
+            model.selectedKey = key
+            if (chosen) model.followOtherStream = key == currentOther
+        }
+    }
+    // Switching streams while reading the old stream's chat moves on to the new stream's chat. A YouTube
+    // tab only appears once its live chat is confirmed, so this also covers that gap.
+    LaunchedEffect(computed.otherStream) {
+        val other = computed.otherStream ?: return@LaunchedEffect
+        if (!model.followOtherStream) return@LaunchedEffect
+        val index = tabs.indexOfFirst { it.key == other }
+        if (index >= 0 && index != pager.currentPage) pager.scrollToPage(index)
     }
     val scope = rememberCoroutineScope()
     val selected = pager.currentPage.coerceAtMost(tabs.lastIndex)

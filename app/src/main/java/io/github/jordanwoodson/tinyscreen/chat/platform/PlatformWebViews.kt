@@ -53,6 +53,9 @@ class PlatformChatViewModel(app: Application) : AndroidViewModel(app) {
     /** The tab last shown, so the pager comes back to it after rotating or hiding chat. */
     var selectedKey: String = ChatTab.Dgg.key
 
+    /** The user is on the chat of the stream bigscreen shows, so a new stream's chat takes over that tab. */
+    var followOtherStream = false
+
     /** "Use the YouTube app" hint closed for this session. */
     var youTubeHintDismissed by mutableStateOf(false)
 

@@ -148,6 +148,17 @@ class PlatformChatTest {
         assertTrue(known.lookups.isEmpty())
         assertEquals("YouTube · Sky News", platform(known.tabs, 2).label)
         assertEquals(ChatUrls.youtube("fgASZeqF_cQ"), platform(known.tabs, 2).chatUrl)
+        assertEquals(ChatUrls.youtube("fgASZeqF_cQ"), known.otherStream)
+        // Waiting on the lookup, there's no tab for the stream yet
+        assertEquals(null, unknown.otherStream)
+    }
+
+    @Test
+    fun destinysOwnStreamOnBigscreenIsNotAnOtherStream() {
+        val content = Content.Embedded(Embed("kick", "destiny"), null)
+        val tabs = PlatformChats.tabs(offline, content, emptyMap())
+        assertEquals(listOf("dgg", kickChat), keys(tabs.tabs))
+        assertEquals(null, tabs.otherStream)
     }
 
     @Test

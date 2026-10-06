@@ -52,8 +52,11 @@ data class ChatTabOptions(
     val otherStreams: Boolean = true,
 )
 
-/** The tabs to show, and the lookups still needed before every tab can appear. */
-data class ChatTabs(val tabs: List<ChatTab>, val lookups: Set<ChatLookup>)
+/**
+ * The tabs to show, and the lookups still needed before every tab can appear. [otherStream] is the key
+ * of the tab for the stream bigscreen is showing, when that has its own tab.
+ */
+data class ChatTabs(val tabs: List<ChatTab>, val lookups: Set<ChatLookup>, val otherStream: String? = null)
 
 object PlatformChats {
     /** Order of Destiny's own tabs, after destiny.gg chat. */
@@ -81,9 +84,15 @@ object PlatformChats {
         fun lookUp(lookup: ChatLookup): ChatLookupResult? = found[lookup] ?: run { lookups += lookup; null }
 
         PLATFORMS.forEach { platform -> add(destinyTab(platform, info.streams[platform], ::lookUp)) }
-        if (options.otherStreams) add(otherStreamTab(content, ::lookUp))
+        var other: String? = null
+        if (options.otherStreams) {
+            otherStreamTab(content, ::lookUp)?.let { tab ->
+                add(tab)
+                if (tabs.last() === tab) other = tab.key
+            }
+        }
         // Lookups for hidden platforms aren't worth the request
-        return ChatTabs(tabs, lookups.filterTo(mutableSetOf()) { it.platform !in options.hidden })
+        return ChatTabs(tabs, lookups.filterTo(mutableSetOf()) { it.platform !in options.hidden }, other)
     }
 
     private fun destinyTab(platform: String, entry: StreamEntry?, lookUp: (ChatLookup) -> ChatLookupResult?): ChatTab.Platform? {

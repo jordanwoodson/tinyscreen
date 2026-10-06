@@ -45,6 +45,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalNavigationDrawer
@@ -56,6 +57,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -165,40 +167,43 @@ fun TinyscreenRoot(activity: MainActivity, host: HostActions) {
             }
         }
 
-        Box(Modifier.fillMaxSize()) {
-            MainScreen(
-                vm = vm,
-                host = host,
-                activity = activity,
-                webEmbed = webEmbed,
-                settings = settings,
-                inPip = inPip,
-                landscape = landscape,
-                fullscreen = fullscreen,
-                overlayOpen = overlay != null,
-                snackbar = snackbar,
-                openUrl = openUrl,
-                onSettings = { overlay = Overlay.Settings },
-                onLogin = { overlay = Overlay.Login },
-                onWhispers = { overlay = Overlay.Whispers },
-            )
-            overlay?.let { current ->
-                // Hidden rather than removed in picture-in-picture, so it's still there afterwards
-                Surface(
-                    color = MaterialTheme.colorScheme.background,
-                    modifier = Modifier.fillMaxSize().then(if (inPip) Modifier.composedButHidden() else Modifier),
-                ) {
-                    when (current) {
-                        Overlay.Settings -> {
-                            BackHandler { overlay = null }
-                            val metered by graph.network.metered.collectAsState()
-                            SettingsScreen(settings, metered, onChange = { graph.settings.launchUpdate(graph.scope, it) }, onBack = { overlay = null })
-                        }
-                        // Handles Back itself, to go back a page first
-                        Overlay.Login -> io.github.jordanwoodson.tinyscreen.auth.LoginScreen(onDone = { overlay = null })
-                        Overlay.Whispers -> {
-                            BackHandler { overlay = null }
-                            io.github.jordanwoodson.tinyscreen.chat.ui.WhispersScreen(onBack = { overlay = null })
+        // Scaffold used to provide these; it can't host the movable stream and chat slots
+        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+            CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onBackground) {
+                MainScreen(
+                    vm = vm,
+                    host = host,
+                    activity = activity,
+                    webEmbed = webEmbed,
+                    settings = settings,
+                    inPip = inPip,
+                    landscape = landscape,
+                    fullscreen = fullscreen,
+                    overlayOpen = overlay != null,
+                    snackbar = snackbar,
+                    openUrl = openUrl,
+                    onSettings = { overlay = Overlay.Settings },
+                    onLogin = { overlay = Overlay.Login },
+                    onWhispers = { overlay = Overlay.Whispers },
+                )
+                overlay?.let { current ->
+                    // Hidden rather than removed in picture-in-picture, so it's still there afterwards
+                    Surface(
+                        color = MaterialTheme.colorScheme.background,
+                        modifier = Modifier.fillMaxSize().then(if (inPip) Modifier.composedButHidden() else Modifier),
+                    ) {
+                        when (current) {
+                            Overlay.Settings -> {
+                                BackHandler { overlay = null }
+                                val metered by graph.network.metered.collectAsState()
+                                SettingsScreen(settings, metered, onChange = { graph.settings.launchUpdate(graph.scope, it) }, onBack = { overlay = null })
+                            }
+                            // Handles Back itself, to go back a page first
+                            Overlay.Login -> io.github.jordanwoodson.tinyscreen.auth.LoginScreen(onDone = { overlay = null })
+                            Overlay.Whispers -> {
+                                BackHandler { overlay = null }
+                                io.github.jordanwoodson.tinyscreen.chat.ui.WhispersScreen(onBack = { overlay = null })
+                            }
                         }
                     }
                 }
