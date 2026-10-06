@@ -83,6 +83,7 @@ class SettingsRepositoryTest {
         whispersInChat = false,
         notifyWhispers = true,
         notifyHighlights = true,
+        chatLines = 1000,
     )
 
     @Test

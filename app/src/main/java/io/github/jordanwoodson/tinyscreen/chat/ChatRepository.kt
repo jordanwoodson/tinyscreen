@@ -194,7 +194,8 @@ class ChatRepository(
     private var nextKey = 1L
     private val recentHashes = LinkedHashSet<String>()
 
-    private val maxLines = 300
+    /** Whether the list is at the bottom; while the reader is scrolled up, nothing is trimmed. */
+    private var atBottom = true
 
     fun start() {
         scope.launch {
@@ -813,8 +814,25 @@ class ChatRepository(
         val last = next.lastOrNull()
         if (last is ChatLine.Combo && !last.completed) next[next.lastIndex] = last.copy(completed = true)
         next.add(line)
-        if (next.size > maxLines) next.subList(0, next.size - maxLines).clear()
+        val cap = lineCap()
+        if (next.size > cap) next.subList(0, next.size - cap).clear()
         _lines.value = next
+    }
+
+    private fun lineCap(): Int {
+        val cap = settings.chatLines.coerceIn(50, AppSettings.CHAT_LINES_UNPINNED)
+        return if (atBottom) cap else AppSettings.CHAT_LINES_UNPINNED
+    }
+
+    /** The UI reports whether it's following the newest line; scrolled up, chat stops trimming. */
+    fun setPinned(atBottom: Boolean) {
+        scope.launch {
+            if (this@ChatRepository.atBottom == atBottom) return@launch
+            this@ChatRepository.atBottom = atBottom
+            val current = _lines.value
+            val cap = lineCap()
+            if (current.size > cap) _lines.value = current.subList(current.size - cap, current.size).toList()
+        }
     }
 
     private fun replaceLast(line: ChatLine) {

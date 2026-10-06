@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -97,7 +98,14 @@ data class AppSettings(
     val whispersInChat: Boolean = true,
     val notifyWhispers: Boolean = false,
     val notifyHighlights: Boolean = false,
-)
+    /** Lines chat keeps while you're at the bottom; scrolled up it keeps up to [CHAT_LINES_UNPINNED]. */
+    val chatLines: Int = 300,
+) {
+    companion object {
+        val chatLineChoices = listOf(150, 300, 500, 1000)
+        const val CHAT_LINES_UNPINNED = 2_000
+    }
+}
 
 class SettingsRepository(private val store: DataStore<Preferences>, scope: CoroutineScope) {
     constructor(context: Context, scope: CoroutineScope) : this(context.dataStore, scope)
@@ -140,6 +148,7 @@ class SettingsRepository(private val store: DataStore<Preferences>, scope: Corou
         val whispersInChat = booleanPreferencesKey("whispers_in_chat")
         val notifyWhispers = booleanPreferencesKey("notify_whispers")
         val notifyHighlights = booleanPreferencesKey("notify_highlights")
+        val chatLines = intPreferencesKey("chat_lines")
     }
 
     val settings: StateFlow<AppSettings> = store.data
@@ -188,6 +197,7 @@ class SettingsRepository(private val store: DataStore<Preferences>, scope: Corou
             whispersInChat = this[Keys.whispersInChat] ?: d.whispersInChat,
             notifyWhispers = this[Keys.notifyWhispers] ?: d.notifyWhispers,
             notifyHighlights = this[Keys.notifyHighlights] ?: d.notifyHighlights,
+            chatLines = this[Keys.chatLines] ?: d.chatLines,
         )
     }
 
@@ -240,6 +250,7 @@ class SettingsRepository(private val store: DataStore<Preferences>, scope: Corou
         this[Keys.whispersInChat] = s.whispersInChat
         this[Keys.notifyWhispers] = s.notifyWhispers
         this[Keys.notifyHighlights] = s.notifyHighlights
+        this[Keys.chatLines] = s.chatLines
     }
 
     fun launchUpdate(scope: CoroutineScope, block: (AppSettings) -> AppSettings) {

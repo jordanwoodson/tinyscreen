@@ -45,6 +45,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -60,6 +61,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -146,14 +151,36 @@ fun NativeChat(
     val listState = rememberLazyListState()
     var follow by remember { mutableStateOf(true) }
     val atBottom by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset < 40 } }
+    // Rows newer than this arrived after the reader scrolled away from the bottom
+    var seenKey by remember { mutableLongStateOf(Long.MAX_VALUE) }
     LaunchedEffect(listState) {
         snapshotFlow { atBottom to listState.isScrollInProgress }.collect { (bottom, scrolling) ->
+            val wasFollowing = follow
             if (scrolling) follow = bottom
             if (bottom) follow = true
+            if (wasFollowing && !follow) seenKey = rows.firstOrNull()?.key ?: Long.MAX_VALUE
         }
     }
+    // While scrolled up chat stops trimming, so what you're reading stays put
+    LaunchedEffect(follow) { chat.setPinned(follow) }
+    DisposableEffect(Unit) { onDispose { chat.setPinned(true) } }
     LaunchedEffect(rows.firstOrNull()?.key, rows.size) {
         if (follow && rows.isNotEmpty()) listState.scrollToItem(0)
+    }
+    val unseen by remember {
+        derivedStateOf {
+            if (follow) return@derivedStateOf Unseen(0, 0)
+            val below = minOf(listState.firstVisibleItemIndex, rows.size)
+            var count = 0
+            var mentions = 0
+            for (i in 0 until below) {
+                val row = rows[i]
+                if (row.key <= seenKey) break
+                if (row.line !is ChatLine.Info) count++
+                if (row.highlighted) mentions++
+            }
+            Unseen(count, mentions)
+        }
     }
 
     Column(modifier.background(ChatColors.Background)) {
@@ -206,17 +233,14 @@ fun NativeChat(
                 }
             }
             if (!follow && !atBottom) {
-                Row(
-                    Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color(0xFF222222)).clickable {
+                NewMessagesPill(
+                    unseen,
+                    onClick = {
                         follow = true
                         scope.launch { listState.scrollToItem(0) }
-                    }.padding(8.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("More messages below", color = Color(0xFF838383), fontSize = 13.sp)
-                    Icon(Icons.Filled.KeyboardArrowDown, null, tint = Color(0xFF838383))
-                }
+                    },
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
+                )
             }
         }
 
@@ -313,6 +337,38 @@ fun NativeChat(
             onOpenEmbed = { onOpenEmbed(it); userSheet = null },
             onOpenUrl = onOpenUrl,
         )
+    }
+}
+
+private data class Unseen(val count: Int, val mentions: Int)
+
+/** "12 new · 2 mentions": what arrived below while you were reading; tap to jump back down. */
+@Composable
+private fun NewMessagesPill(unseen: Unseen, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val text = buildAnnotatedString {
+        if (unseen.count == 0) {
+            append("Back to the latest")
+        } else {
+            append("${unseen.count} new")
+            if (unseen.mentions > 0) {
+                append(" · ")
+                withStyle(SpanStyle(color = ChatColors.Link, fontWeight = FontWeight.Bold)) {
+                    append("${unseen.mentions} mention${if (unseen.mentions == 1) "" else "s"}")
+                }
+            }
+        }
+    }
+    Row(
+        modifier
+            .heightIn(min = 40.dp)
+            .background(Color(0xFF2A2A2A), RoundedCornerShape(20.dp))
+            .border(1.dp, Color(0xFF3A3A3A), RoundedCornerShape(20.dp))
+            .clickable(role = Role.Button, onClickLabel = "Scroll to the latest messages", onClick = onClick)
+            .padding(start = 14.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text, color = ChatColors.Bright, fontSize = 13.sp)
+        Icon(Icons.Filled.KeyboardArrowDown, null, tint = ChatColors.Bright)
     }
 }
 

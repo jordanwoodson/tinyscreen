@@ -193,6 +193,15 @@ fun SettingsScreen(
                     trailingContent = { Text("${(fontScale * 100).toInt()}%") },
                 )
             }
+            item {
+                ChoiceRow(
+                    "Chat history",
+                    "Messages kept while you're at the bottom of chat. Scrolled up, chat pauses and keeps up to " +
+                        "${java.text.NumberFormat.getIntegerInstance().format(AppSettings.CHAT_LINES_UNPINNED)} so nothing moves while you read",
+                    AppSettings.chatLineChoices.map { it.toString() },
+                    settings.chatLines.toString(),
+                ) { v -> onChange { it.copy(chatLines = v.toInt()) } }
+            }
             item { WordsRow("Highlight words", settings.highlightWords) { editing = "highlight" } }
             item { WordsRow("Ignored users", settings.ignoredUsers) { editing = "ignore" } }
             item { WordsRow("Highlighted users", settings.highlightNicks) { editing = "highlightNicks" } }
