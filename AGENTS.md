@@ -10,4 +10,5 @@
 - Never change the release signing key: Android only installs updates signed with the same certificate.
   The keystore lives outside the repo in `~/.android/tinyscreen/` (`key.properties` here is a symlink to it)
   and in the repo's Actions secrets.
-- Check before pushing: `./gradlew :app:testDebugUnitTest :app:assembleRelease`
+- Check before pushing: `./gradlew :app:testDebugUnitTest :app:lintRelease :app:assembleRelease`
+  (CI fails the release on a lint error that isn't in `app/lint-baseline.xml`)

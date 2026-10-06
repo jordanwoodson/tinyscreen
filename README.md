@@ -41,6 +41,14 @@ Unofficial — not affiliated with destiny.gg.
 - Whispers inbox and conversations, optional notifications for whispers and highlights.
 - Prefer the site's chat? Turn on **Settings → Use web chat**.
 
+**Platform chats**
+- Swipe or tap between destiny.gg chat and Destiny's chat on each platform he streams to: Kick (always),
+  YouTube, Twitch, Rumble and Facebook while live there. `dggApi:streamInfo` lists exactly those five.
+- A tab for the chat of whoever bigscreen is showing ("Kick · anythingelse") on Kick, Twitch, YouTube
+  live and Rumble.
+- Each is the platform's own popout chat, so signing in (tab menu → Sign in) lets you chat there too.
+  Google may refuse sign-in inside the app; the YouTube tab offers the YouTube app instead.
+
 **Layout**
 - Portrait: stream, info, top embeds and chat stacked like the site on mobile.
 - Landscape: chat beside the stream with a drag handle, Swap and Close; Cinema Mode; Popout (chat-only
