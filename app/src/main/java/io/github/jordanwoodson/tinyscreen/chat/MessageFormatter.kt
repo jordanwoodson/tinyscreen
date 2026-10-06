@@ -33,7 +33,6 @@ class MessageFormatter(
         val eligibleForStyles = author == null || author.isSubscriber || author.isPrivileged
         val greentext = eligibleForStyles && text.trimStart().startsWith(">")
         val sus = eligibleForStyles && text.trimStart().startsWith("ඞ")
-        if (sus) text = text.uppercase()
 
         val segments = mutableListOf<Segment>()
         // 1. links
@@ -54,7 +53,19 @@ class MessageFormatter(
         val mentions = mutableSetOf<String>()
         val finalSegments = withEmotes.flatMap { s -> if (s is Segment.Text) splitMentions(s.text, mentions) else listOf(s) }
 
-        return Formatted(merge(finalSegments), action, greentext, sus, linkTag, mentions)
+        // ඞ shouts, but only the words: links and emotes (many are lowercase) keep their case
+        val styled = if (sus) {
+            finalSegments.map {
+                when (it) {
+                    is Segment.Text -> Segment.Text(it.text.uppercase())
+                    is Segment.Mention -> it.copy(text = it.text.uppercase())
+                    else -> it
+                }
+            }
+        } else {
+            finalSegments
+        }
+        return Formatted(merge(styled), action, greentext, sus, linkTag, mentions)
     }
 
     private fun splitHashes(text: String): List<Segment> {

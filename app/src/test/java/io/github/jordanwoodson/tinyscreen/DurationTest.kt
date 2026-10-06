@@ -16,6 +16,12 @@ class DurationTest {
     }
 
     @Test
+    fun hugeDurationsAreRejectedInsteadOfOverflowing() {
+        assertNull(ChatRepository.parseDurationNanos("99999999999999999999999"))
+        assertNull(ChatRepository.parseDurationNanos("9999999999999d"))
+    }
+
+    @Test
     fun validatesNicks() {
         assertEquals(true, ChatRepository.validNick("Destiny"))
         assertEquals(false, ChatRepository.validNick("ab"))

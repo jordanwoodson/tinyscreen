@@ -90,6 +90,25 @@ class ChatRepositoryTest {
     }
 
     @Test
+    fun hugeNumbersInCommandsDoNotCrash() = runBlocking {
+        chat.receive("""ME {"id":1,"nick":"Jordan","roles":["MODERATOR"],"features":[]}""")
+        chat.submit("/poll is this fine? yes or no 99999999999999999999999m")
+        assertFalse(chat.submit("/mute someone 99999999999999999999999d"))
+        assertTrue(chat.lines.value.any { it is ChatLine.Info && it.text.startsWith("Invalid time") })
+    }
+
+    @Test
+    fun vestaboardAnnouncementsShowInChat() = runBlocking {
+        chat.receive(
+            """VESTABOARD_LEAD {"submitter":"artfan","total":1500,"isNewDesign":true,"contributors":[{"name":"artfan","amountCents":1500}],""" +
+                """"timestamp":1791303749000,"expirationTimestamp":1791303809000,"uuid":"v-1"}""",
+        )
+        val event = chat.lines.value.filterIsInstance<ChatLine.Event>().single().event
+        assertEquals("artfan took the lead with a new design · $15.00", event.title)
+        assertEquals("https://www.destiny.gg/vestaboard", event.url)
+    }
+
+    @Test
     fun chatStopsTrimmingWhileScrolledUp() = runBlocking {
         repeat(350) { chat.receive(msg("user$it", "line $it", 1_000L + it)) }
         assertEquals(300, userLines().size)

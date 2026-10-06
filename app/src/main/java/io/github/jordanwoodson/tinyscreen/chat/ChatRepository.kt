@@ -9,6 +9,7 @@ import io.github.jordanwoodson.tinyscreen.settings.AppSettings
 import io.github.jordanwoodson.tinyscreen.settings.SettingsRepository
 import io.github.jordanwoodson.tinyscreen.stream.Embed
 import io.github.jordanwoodson.tinyscreen.stream.Times
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -69,7 +70,8 @@ class ChatRepository(
     val assets: ChatAssets,
 ) {
     private val dispatcher = Dispatchers.Default.limitedParallelism(1)
-    private val scope = CoroutineScope(appScope.coroutineContext + dispatcher)
+    // A bug in one handler logs instead of taking the whole app down
+    private val scope = CoroutineScope(appScope.coroutineContext + dispatcher + CoroutineExceptionHandler { _, e -> Log.e(TAG, "chat error", e) })
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val json = Http.json
     private val settings: AppSettings get() = settingsRepo.settings.value
@@ -498,7 +500,8 @@ class ChatRepository(
                 append(ChatLine.Death(key(), ts, user, it["data"].str().orEmpty()))
                 if (user.key == _me.value?.key) startMute(ts, it["duration"].long() ?: 0)
             }
-            "SUBSCRIPTION", "GIFTSUB", "MASSGIFT", "DONATION", "XPOST", "SPOTLIGHT" -> o?.let {
+            "SUBSCRIPTION", "GIFTSUB", "MASSGIFT", "DONATION", "XPOST", "SPOTLIGHT",
+            "VESTABOARD_LEAD", "VESTABOARD_HOURLY", "VESTABOARD_RESET" -> o?.let {
                 if (event == "SPOTLIGHT") it["key"].str()?.let { k -> _spotlights.value = _spotlights.value + k }
                 val ev = parseEvent(event, it) ?: return@let
                 if (event != "SPOTLIGHT") append(ChatLine.Event(key(), ev.timestamp, ev))
@@ -862,6 +865,7 @@ class ChatRepository(
             }
             "XPOST" -> PaidEvent(uuid, type, null, ts, expires, "@${o["handle"].str().orEmpty()} posted on X", null,
                 o["text"].str(), null, null, null, o["url"].str())
+            "VESTABOARD_LEAD", "VESTABOARD_HOURLY", "VESTABOARD_RESET" -> vestaboard(type, o, uuid, ts, expires)
             "SPOTLIGHT" -> {
                 val author = (o["user"] as? JsonObject)?.let { parseUser(it) } ?: o["nick"].str()?.let { ChatUser(nick = it) }
                 PaidEvent(uuid, type, author, ts, expires, "${author?.nick ?: "Someone"} spotlighted by ${o["spotlightedBy"].str() ?: "a mod"}",
@@ -870,6 +874,38 @@ class ChatRepository(
             else -> null
         }
     }
+
+    /** The Vestaboard auction's announcements, worded as on the site. */
+    private fun vestaboard(type: String, o: JsonObject, uuid: String, ts: Long, expires: Long): PaidEvent {
+        val submitter = o["submitter"].str()?.takeIf { it.isNotBlank() }
+        val amount = usd(o["total"].long() ?: 0)
+        val newDesign = (o["isNewDesign"] as? JsonPrimitive)?.booleanOrNull != false
+        val title = when {
+            type == "VESTABOARD_HOURLY" && submitter == null -> "No designs on the Vestaboard yet"
+            type == "VESTABOARD_LEAD" && !newDesign -> "$submitter funded ${o["artist"].str() ?: "someone"}'s design into the lead · $amount"
+            type == "VESTABOARD_LEAD" -> "$submitter took the lead with a new design · $amount"
+            type == "VESTABOARD_HOURLY" -> "$submitter is leading the Vestaboard · $amount"
+            else -> "$submitter won the Vestaboard auction · $amount"
+        }
+        val prompt = when {
+            type == "VESTABOARD_HOURLY" && submitter == null -> "Be the first. Submit a design to claim the board."
+            type == "VESTABOARD_LEAD" -> "Think you can top it? Fund a challenger or submit your own."
+            type == "VESTABOARD_HOURLY" -> "The auction's live. Fund a design to take the lead."
+            else -> "A new auction begins now! Submit a design to claim the board."
+        }
+        val contributors = (o["contributors"] as? JsonArray)?.mapNotNull { c ->
+            val obj = c as? JsonObject ?: return@mapNotNull null
+            val name = obj["name"].str() ?: return@mapNotNull null
+            "@$name ${usd(obj["amountCents"].long() ?: 0)}"
+        }.orEmpty()
+        return PaidEvent(
+            uuid, type, submitter?.let { usersMap[it.lowercase()] ?: ChatUser(nick = it) }, ts, expires, title,
+            contributors.takeIf { it.isNotEmpty() }?.joinToString(" · ", prefix = "Top contributors: "), prompt,
+            null, null, null, "https://www.destiny.gg/vestaboard",
+        )
+    }
+
+    private fun usd(cents: Long) = NumberFormat.getCurrencyInstance(Locale.US).format(cents / 100.0)
 
     private fun addEventChip(ev: PaidEvent) {
         if (ev.expiresAt <= now()) return
@@ -1254,15 +1290,19 @@ class ChatRepository(
             "DIE", "SUICIDE", "BITLY" -> sendRaw("DIE", buildJsonObject { put("data", "") })
             "MUTE" -> {
                 val nick = args.getOrNull(0) ?: return info(InfoKind.Error, "Usage: /mute <nick> [<time>]")
+                val duration = args.getOrNull(1)?.let { parseDurationNanos(it) ?: return info(InfoKind.Error, "Invalid time - /mute <nick> [<time>], like 10m or 1h") }
                 sendRaw("MUTE", buildJsonObject {
                     put("data", nick)
-                    args.getOrNull(1)?.let { parseDurationNanos(it) }?.let { put("duration", it) }
+                    duration?.let { put("duration", it) }
                 })
             }
             "UNMUTE" -> args.firstOrNull()?.let { sendRaw("UNMUTE", buildJsonObject { put("data", it) }) }
             "UNBAN" -> args.firstOrNull()?.let { sendRaw("UNBAN", buildJsonObject { put("data", it) }) }
             "BAN", "IPBAN" -> {
-                if (args.size < 3) return info(InfoKind.Error, "Usage: /ban <nick> <time> <reason> (time can be 'permanent').")
+                val usage = "Usage: /ban <nick> <time> <reason> (time can be 'permanent')."
+                if (args.size < 3) return info(InfoKind.Error, usage)
+                val permanent = args[1].startsWith("perm", ignoreCase = true)
+                if (!permanent && parseDurationNanos(args[1]) == null) return info(InfoKind.Error, usage)
                 val reason = args.drop(2).joinToString(" ")
                 sendRaw("BAN", buildJsonObject {
                     put("nick", args[0])
@@ -1360,8 +1400,9 @@ class ChatRepository(
         var timeMs = 30_000L
         POLL_TIME.find(body)?.let { m ->
             val v = m.groupValues[1]
-            val n = v.dropLast(1).toLong()
-            timeMs = if (v.endsWith("m", ignoreCase = true)) n * 60_000 else n * 1000
+            // A huge number just means the longest poll, rather than a crash
+            val n = v.dropLast(1).toLongOrNull() ?: Long.MAX_VALUE
+            timeMs = times(n, if (v.endsWith("m", ignoreCase = true)) 60_000 else 1000) ?: Long.MAX_VALUE
             body = body.substring(0, m.range.first).trim()
         }
         timeMs = timeMs.coerceIn(5_000, 600_000)
@@ -1470,17 +1511,20 @@ class ChatRepository(
         }
 
         /** "10m" → nanoseconds, default unit seconds. */
+        /** Null when it isn't a duration, or is too long to send. */
         fun parseDurationNanos(value: String): Long? {
             val m = DURATION.find(value) ?: return null
-            val n = m.groupValues[1].toLong()
-            val ms = when (m.groupValues[2].firstOrNull()?.lowercaseChar()) {
-                'm' -> n * 60_000
-                'h' -> n * 3_600_000
-                'd' -> n * 86_400_000
-                else -> n * 1000
+            val n = m.groupValues[1].toLongOrNull() ?: return null
+            val unitMs = when (m.groupValues[2].firstOrNull()?.lowercaseChar()) {
+                'm' -> 60_000L
+                'h' -> 3_600_000L
+                'd' -> 86_400_000L
+                else -> 1000L
             }
-            return ms * 1_000_000
+            return times(n, unitMs)?.let { times(it, 1_000_000) }
         }
+
+        private fun times(a: Long, b: Long): Long? = if (a != 0L && b > Long.MAX_VALUE / a) null else a * b
 
         fun inDuration(ms: Long): String {
             val minutes = (ms + 59_999) / 60_000

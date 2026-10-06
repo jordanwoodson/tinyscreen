@@ -61,6 +61,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.SpanStyle
@@ -84,6 +85,7 @@ import io.github.jordanwoodson.tinyscreen.settings.AppSettings
 import io.github.jordanwoodson.tinyscreen.stream.Embed
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
 
 @Composable
 fun NativeChat(
@@ -128,6 +130,12 @@ fun NativeChat(
     LaunchedEffect(Unit) { chat.embedRequests.collect { onOpenEmbed(it) } }
     LaunchedEffect(Unit) { chat.loginRequests.collect { onLogin() } }
 
+    val context = LocalContext.current
+    val locale = LocalConfiguration.current.locales[0]
+    val timeFormat = remember(locale) {
+        val pattern = if (android.text.format.DateFormat.is24HourFormat(context)) "HH:mm" else android.text.format.DateFormat.getBestDateTimePattern(locale, "hm")
+        SimpleDateFormat(pattern, locale)
+    }
     val scale = settings.chatFontScale
     val fontSize = (13.5f * scale).sp
     val inlineContent = rememberInlineContent(emotes.byPrefix.values, flairs.values, scale, settings.animateEmotes)
@@ -137,6 +145,7 @@ fun NativeChat(
         fontSize = fontSize,
         emoteScale = scale,
         showTime = settings.showTimestamps,
+        timeFormat = timeFormat,
         hideFlairs = settings.hideFlairs,
         animate = settings.animateEmotes,
         greentext = settings.greentext,
@@ -221,26 +230,28 @@ fun NativeChat(
             }
             expandedEvent?.let { ev ->
                 Box(Modifier.align(Alignment.TopCenter).padding(top = 4.dp)) {
-                    EventCard(ev, ctx, onClick = { expandedEvent = null })
+                    EventCard(ev, ctx, onClick = { expandedEvent = null }, onUrl = onOpenUrl)
                     if (me?.isModerator == true) {
                         Text(
                             "Remove Event",
                             color = ChatColors.Error,
                             fontSize = 12.sp,
-                            modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp).clickable { chat.removeEvent(ev.uuid); expandedEvent = null },
+                            modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp)
+                                .clickable(role = Role.Button) { chat.removeEvent(ev.uuid); expandedEvent = null }
+                                .padding(horizontal = 8.dp, vertical = 12.dp),
                         )
                     }
                 }
             }
             focused?.let { nick ->
                 Row(
-                    Modifier.align(Alignment.TopStart).padding(6.dp).background(Color(0xFF222222), RoundedCornerShape(12.dp))
-                        .clickable { focused = null }.padding(horizontal = 10.dp, vertical = 4.dp),
+                    Modifier.align(Alignment.TopStart).padding(6.dp).heightIn(min = 36.dp).background(Color(0xFF222222), RoundedCornerShape(18.dp))
+                        .clickable(role = Role.Button, onClickLabel = "Stop focusing") { focused = null }.padding(horizontal = 12.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text("Focusing $nick", color = ChatColors.Bright, fontSize = 12.sp)
                     Spacer(Modifier.width(4.dp))
-                    Icon(Icons.Filled.Close, "Stop focusing", tint = ChatColors.Bright, modifier = Modifier.size(14.dp))
+                    Icon(Icons.Filled.Close, null, tint = ChatColors.Bright, modifier = Modifier.size(14.dp))
                 }
             }
             if (!follow && !atBottom) {
@@ -260,7 +271,8 @@ fun NativeChat(
                 if (status == ConnectionStatus.Connecting) "Connecting…" else "Disconnected — tap to reconnect",
                 color = Color(0xFF838383),
                 fontSize = 12.sp,
-                modifier = Modifier.fillMaxWidth().background(Color(0xFF151515)).clickable { chat.reconnect() }.padding(6.dp),
+                modifier = Modifier.fillMaxWidth().background(Color(0xFF151515))
+                    .clickable(role = Role.Button, onClickLabel = "Reconnect") { chat.reconnect() }.padding(horizontal = 6.dp, vertical = 10.dp),
             )
         }
 
@@ -547,8 +559,8 @@ private fun EventBar(events: List<PaidEvent>, onClick: (PaidEvent) -> Unit) {
                         ),
                         RoundedCornerShape(12.dp),
                     )
-                    .clickable { onClick(ev) }
-                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                    .clickable(role = Role.Button) { onClick(ev) }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
             ) {
                 Text(ev.user?.nick ?: ev.title.substringBefore(' '), color = color, fontSize = 12.sp, fontWeight = FontWeight.Medium)
             }
@@ -582,8 +594,17 @@ private fun PinnedCard(
             Icon(Icons.Filled.PushPin, null, tint = ChatColors.Bright, modifier = Modifier.size(14.dp))
             Spacer(Modifier.width(4.dp))
             Text("Pinned by $nick", color = Color(0xFF9A9A9A), fontSize = 12.sp, modifier = Modifier.weight(1f))
-            if (canUnpin) Text("Unpin", color = ChatColors.Error, fontSize = 12.sp, modifier = Modifier.clickable(onClick = onUnpin).padding(4.dp))
-            Icon(Icons.Filled.Close, "Hide", tint = Color(0xFF9A9A9A), modifier = Modifier.size(18.dp).clickable(onClick = onDismiss))
+            if (canUnpin) {
+                Text(
+                    "Unpin",
+                    color = ChatColors.Error,
+                    fontSize = 12.sp,
+                    modifier = Modifier.clickable(role = Role.Button, onClick = onUnpin).padding(horizontal = 8.dp, vertical = 12.dp),
+                )
+            }
+            IconButton(onClick = onDismiss, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.Filled.Close, "Hide pinned message", tint = Color(0xFF9A9A9A), modifier = Modifier.size(18.dp))
+            }
         }
         val line = ChatLine.User(0, 0, io.github.jordanwoodson.tinyscreen.chat.ChatUser(nick = nick), text, segments,
             false, false, false, null, emptySet(), "")
@@ -608,7 +629,9 @@ private fun PollPanel(poll: PollState, onVote: (Int) -> Unit, onClose: () -> Uni
     Column(Modifier.fillMaxWidth().background(Color(0xFF151515)).padding(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(poll.question, color = ChatColors.Bright, fontWeight = FontWeight.Bold, fontSize = fontSize, modifier = Modifier.weight(1f))
-            Icon(Icons.Filled.Close, "Hide poll", tint = Color(0xFF9A9A9A), modifier = Modifier.size(18.dp).clickable(onClick = onClose))
+            IconButton(onClick = onClose, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.Filled.Close, "Hide poll", tint = Color(0xFF9A9A9A), modifier = Modifier.size(18.dp))
+            }
         }
         Text(
             if (poll.ended) "Poll ended! ${poll.totalVotes} votes cast." else
@@ -631,7 +654,7 @@ private fun PollPanel(poll: PollState, onVote: (Int) -> Unit, onClose: () -> Uni
                         .padding(vertical = 3.dp)
                         .fillMaxWidth()
                         .background(if (mine) Color(0xFF333333) else Color(0xFF1E1E1E), RoundedCornerShape(6.dp))
-                        .clickable(enabled = poll.canVote && !poll.ended) { onVote(i + 1) },
+                        .clickable(enabled = poll.canVote && !poll.ended, role = Role.Button, onClickLabel = "Vote for option ${i + 1}") { onVote(i + 1) },
                 ) {
                     Box(
                         Modifier.fillMaxWidth(pct).height(34.dp).background(

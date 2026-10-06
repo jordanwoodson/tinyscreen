@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -42,6 +43,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.Placeholder
@@ -70,9 +72,7 @@ import io.github.jordanwoodson.tinyscreen.chat.LinkTag
 import io.github.jordanwoodson.tinyscreen.chat.PaidEvent
 import io.github.jordanwoodson.tinyscreen.chat.Segment
 import io.github.jordanwoodson.tinyscreen.stream.Embed
-import java.text.SimpleDateFormat
 import java.util.Date
-import java.util.Locale
 
 object ChatColors {
     val Background = Color(0xFF080808)
@@ -104,6 +104,8 @@ data class LineContext(
     val fontSize: TextUnit,
     val emoteScale: Float,
     val showTime: Boolean,
+    /** Line timestamps, in the phone's 12/24-hour style. */
+    val timeFormat: java.text.DateFormat,
     val hideFlairs: Boolean,
     val animate: Boolean,
     val greentext: Boolean,
@@ -123,7 +125,6 @@ data class LineActions(
     val onMessageMenu: (ChatLine.User) -> Unit = {},
 )
 
-private val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
 
 fun usernameStyle(user: ChatUser, flairs: Map<String, Flair>): SpanStyle {
     val decider = user.features.mapNotNull { flairs[it] }
@@ -182,7 +183,7 @@ fun ChatLineView(
                 style = TextStyle(color = ChatColors.Text, fontSize = ctx.fontSize, fontStyle = FontStyle.Italic),
             )
         }
-        is ChatLine.Event -> EventCard(line.event, ctx, onClick = { actions.onEvent(line.event) })
+        is ChatLine.Event -> EventCard(line.event, ctx, onClick = { actions.onEvent(line.event) }, onUrl = actions.onUrl)
     }
 }
 
@@ -210,7 +211,7 @@ private fun UserLine(
     }
     val text = buildAnnotatedString {
         if (ctx.showTime || line.historical) {
-            withStyle(SpanStyle(color = ChatColors.Time, fontSize = ctx.fontSize * 0.8f)) { append(timeFormat.format(Date(line.timestamp)) + " ") }
+            withStyle(SpanStyle(color = ChatColors.Time, fontSize = ctx.fontSize * 0.8f)) { append(ctx.timeFormat.format(Date(line.timestamp)) + " ") }
         }
         if (continued && !line.whisper) {
             withStyle(SpanStyle(color = Color(0xFF414141))) { append("> ") }
@@ -420,7 +421,7 @@ fun eventColor(event: PaidEvent): Color = when {
 }
 
 @Composable
-fun EventCard(event: PaidEvent, ctx: LineContext, onClick: () -> Unit) {
+fun EventCard(event: PaidEvent, ctx: LineContext, onClick: () -> Unit, onUrl: ((String) -> Unit)? = null) {
     val color = eventColor(event)
     Column(
         Modifier
@@ -441,6 +442,16 @@ fun EventCard(event: PaidEvent, ctx: LineContext, onClick: () -> Unit) {
         val body = listOfNotNull(event.subtitle, event.message).joinToString("\n")
         if (body.isNotBlank()) {
             Text(body, color = ChatColors.Text, fontSize = ctx.fontSize, modifier = Modifier.padding(8.dp))
+        }
+        val url = event.url
+        if (url != null && onUrl != null) {
+            Row(
+                Modifier.clickable(role = Role.Button) { onUrl(url) }.heightIn(min = 40.dp).padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(if (event.type.startsWith("VESTABOARD")) "Open the Vestaboard" else "Open the post", color = ChatColors.Link, fontSize = ctx.fontSize)
+                Icon(Icons.AutoMirrored.Filled.OpenInNew, null, tint = ChatColors.Link, modifier = Modifier.padding(start = 4.dp).size(14.dp))
+            }
         }
     }
 }
