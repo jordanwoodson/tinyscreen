@@ -68,29 +68,41 @@ data class FlairJson(
     val image: List<AssetImage> = emptyList(),
 )
 
-/** Horizontal sprite-strip animation parsed from emotes.css. */
+/**
+ * A frame strip played the way emotes.css does it: `steps(frames)` over background-position from
+ * [start] to [end] (CSS px, usually negative), [durationMs] per play.
+ */
 data class SpriteAnimation(
-    val frameWidth: Int,
+    val start: Int,
+    val end: Int,
     val frames: Int,
     val durationMs: Int,
     /** 0 = infinite. */
     val iterations: Int,
-    val holdLastFrame: Boolean,
-)
+    /** `forwards`: stay on the end position afterwards instead of the resting one. */
+    val holdEnd: Boolean,
+) {
+    fun offsetAt(frame: Int): Int = start + ((end - start).toLong() * frame / frames).toInt()
+}
 
 data class Emote(
     val prefix: String,
     val url: String,
     val mime: String,
-    /** Size of one frame as displayed (CSS px ≈ dp). */
+    /** Size of the emote's box as displayed (CSS px ≈ dp). */
     val width: Int,
     val height: Int,
+    /** Width of the image itself; wider than [width] for sprite sheets. */
     val sheetWidth: Int,
     val minimumSubTier: Int,
     val twitch: Boolean,
     val creator: String?,
     val sprite: SpriteAnimation?,
+    /** background-position x while not animating, e.g. dggL shows one heart from a strip. */
+    val restOffset: Int = 0,
 ) {
+    /** The box shows part of the image: drawn through a window rather than scaled to fit. */
+    val cropped: Boolean get() = sprite != null || width < sheetWidth || restOffset != 0
     val animated: Boolean get() = sprite != null || mime.contains("gif") || mime.contains("avif") || mime.contains("webp")
 }
 

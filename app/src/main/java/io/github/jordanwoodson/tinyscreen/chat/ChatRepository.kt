@@ -24,6 +24,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
@@ -31,6 +33,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -189,7 +192,7 @@ class ChatRepository(
     private var openedAt = 0L
     private var attempts = 0
     private var reconnectJob: Job? = null
-    private var wanted = false
+    @Volatile private var wanted = false
     private var stopReconnecting = false
     private var nextKey = 1L
     private val recentHashes = LinkedHashSet<String>()
@@ -202,13 +205,38 @@ class ChatRepository(
             if (wanted) return@launch
             wanted = true
             assets.loadCached()
+            refreshAssets()
             if (assets.emotes.value.byPrefix.isEmpty()) {
-                // First run: history is formatted on arrival, so get emotes before connecting
-                kotlinx.coroutines.withTimeoutOrNull(6_000) { assets.refresh() }
-            } else {
-                appScope.launch { assets.refresh() }
+                // First run: history is formatted on arrival, so give the emotes a moment before connecting
+                withTimeoutOrNull(6_000) { assets.emotes.first { it.byPrefix.isNotEmpty() } }
             }
             if (wanted) connect()
+        }
+    }
+
+    private var assetsJob: Job? = null
+
+    /** Fetches emotes and flairs, retrying with backoff: a slow first start used to mean no emotes all session. */
+    private fun refreshAssets(restart: Boolean = false) {
+        if (assetsJob?.isActive == true && !restart) return
+        assetsJob?.cancel()
+        assetsJob = appScope.launch {
+            var wait = 5_000L
+            while (!assets.refresh() && wanted) {
+                delay(wait)
+                wait = (wait * 2).coerceAtMost(5 * 60_000L)
+            }
+        }
+    }
+
+    /** Lines formatted before the emotes arrived, or before they changed, get them now. */
+    private fun reformatLines() {
+        val current = _lines.value
+        if (current.none { it is ChatLine.User }) return
+        _lines.value = current.map { l ->
+            if (l !is ChatLine.User) return@map l
+            val f = formatter.format(l.raw, l.user)
+            l.copy(segments = f.segments, action = f.action, greentext = f.greentext, sus = f.sus, linkTag = f.linkTag, mentions = f.mentions)
         }
     }
 
@@ -1224,6 +1252,11 @@ class ChatRepository(
     private fun JsonElement?.long(): Long? = (this as? JsonPrimitive)?.let { it.longOrNull ?: it.contentOrNull?.toDoubleOrNull()?.toLong() }
 
     private fun fmt(n: Int) = NumberFormat.getIntegerInstance().format(n)
+
+    init {
+        // Last in the class, so everything it touches is initialised before it runs
+        scope.launch { assets.emotes.drop(1).collect { reformatLines() } }
+    }
 
     companion object {
         private const val TAG = "Chat"

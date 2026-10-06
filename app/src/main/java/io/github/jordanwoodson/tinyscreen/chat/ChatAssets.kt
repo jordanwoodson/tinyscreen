@@ -10,9 +10,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.json.JsonArray
 import java.io.File
-import kotlin.math.roundToInt
 
 data class EmoteSet(
     val byPrefix: Map<String, Emote> = emptyMap(),
@@ -23,7 +23,6 @@ data class EmoteSet(
 /** Emotes and flairs from r2cdn.destiny.gg, cached on disk for instant startup. */
 class ChatAssets(context: Context) {
     private val dir = File(context.filesDir, "chat-assets").apply { mkdirs() }
-    private val json = Http.json
 
     private val _emotes = MutableStateFlow(EmoteSet())
     val emotes: StateFlow<EmoteSet> = _emotes.asStateFlow()
@@ -34,66 +33,79 @@ class ChatAssets(context: Context) {
     private var cacheKey: String = (System.currentTimeMillis() / 3_600_000).toString()
 
     suspend fun loadCached() = withContext(Dispatchers.IO) {
-        runCatching { build(read("emotes.json"), read("emotes.css"), read("flairs.json")) }
-            .onFailure { Log.w(TAG, "no cached assets: ${it.message}") }
+        runCatching { buildEmotes(read("emotes.json"), read("emotes.css")) }.onFailure { Log.w(TAG, "no cached emotes: ${it.message}") }
+        runCatching { buildFlairs(read("flairs.json")) }.onFailure { Log.w(TAG, "no cached flairs: ${it.message}") }
     }
 
-    suspend fun refresh(newKey: String? = null) {
+    /** Fetches emotes and flairs. Returns whether both loaded, so a failure can be retried. */
+    suspend fun refresh(newKey: String? = null): Boolean {
         if (newKey != null) cacheKey = newKey
-        runCatching {
-            coroutineScope {
-                val e = async { Http.getString("$CDN/emotes/emotes.json?_=$cacheKey") }
-                val c = async { Http.getString("$CDN/emotes/emotes.css?_=$cacheKey") }
-                val f = async { Http.getString("$CDN/flairs/flairs.json?_=$cacheKey") }
-                val (emotesJson, emotesCss, flairsJson) = Triple(e.await(), c.await(), f.await())
-                withContext(Dispatchers.IO) {
-                    build(emotesJson, emotesCss, flairsJson)
-                    write("emotes.json", emotesJson)
-                    write("emotes.css", emotesCss)
-                    write("flairs.json", flairsJson)
-                }
+        return coroutineScope {
+            val e = async { runCatching { Http.getString("$CDN/emotes/emotes.json?_=$cacheKey") } }
+            val c = async { runCatching { Http.getString("$CDN/emotes/emotes.css?_=$cacheKey") } }
+            val f = async { runCatching { Http.getString("$CDN/flairs/flairs.json?_=$cacheKey") } }
+            val (emotesJson, emotesCss, flairsJson) = Triple(e.await(), c.await(), f.await())
+            withContext(Dispatchers.IO) {
+                val emotesOk = runCatching {
+                    buildEmotes(emotesJson.getOrThrow(), emotesCss.getOrThrow())
+                    write("emotes.json", emotesJson.getOrThrow())
+                    write("emotes.css", emotesCss.getOrThrow())
+                }.onFailure { Log.w(TAG, "emote refresh failed", it) }.isSuccess
+                val flairsOk = runCatching {
+                    buildFlairs(flairsJson.getOrThrow())
+                    write("flairs.json", flairsJson.getOrThrow())
+                }.onFailure { Log.w(TAG, "flair refresh failed", it) }.isSuccess
+                emotesOk && flairsOk
             }
-        }.onFailure { Log.w(TAG, "asset refresh failed", it) }
+        }
     }
 
     private fun read(name: String): String = File(dir, name).readText()
     private fun write(name: String, text: String) = File(dir, name).writeText(text)
 
-    private fun build(emotesJson: String, emotesCss: String, flairsJson: String) {
-        val css = parseEmoteCss(emotesCss)
-        val emotes = json.decodeFromString(ListSerializer(EmoteJson.serializer()), emotesJson).mapNotNull { e ->
-            val img = e.image.firstOrNull() ?: return@mapNotNull null
-            val rule = css[e.prefix]
-            val frameWidth = rule?.width ?: img.width
-            val height = rule?.height ?: img.height
-            val sprite = if (rule != null && frameWidth in 1 until img.width && img.width.toFloat() / frameWidth >= 1.5f) {
-                val frames = (img.width.toFloat() / frameWidth).roundToInt().coerceAtLeast(1)
-                SpriteAnimation(
-                    frameWidth = frameWidth,
-                    frames = frames,
-                    durationMs = rule.durationMs ?: (frames * 50),
-                    iterations = rule.iterations ?: 1,
-                    holdLastFrame = rule.holdLastFrame,
-                )
-            } else {
-                null
-            }
-            Emote(
-                prefix = e.prefix,
-                url = img.url,
-                mime = img.mime ?: "image/png",
-                width = if (sprite != null) frameWidth else img.width,
-                height = height,
-                sheetWidth = img.width,
-                minimumSubTier = e.minimumSubTier,
-                twitch = e.twitch,
-                creator = e.creator?.takeIf { it.isNotBlank() },
-                sprite = sprite,
-            )
-        }
+    private fun buildEmotes(emotesJson: String, emotesCss: String) {
+        val emotes = parseEmotes(emotesJson, emotesCss)
+        if (emotes.isEmpty()) error("no emotes in emotes.json")
         _emotes.value = EmoteSet(emotes.associateBy { it.prefix })
+    }
 
-        _flairs.value = json.decodeFromString(ListSerializer(FlairJson.serializer()), flairsJson).associate { f ->
+    private fun buildFlairs(flairsJson: String) {
+        val flairs = parseFlairs(flairsJson)
+        if (flairs.isEmpty()) error("no flairs in flairs.json")
+        _flairs.value = flairs
+    }
+
+    companion object {
+        private const val TAG = "ChatAssets"
+        const val CDN = "https://r2cdn.destiny.gg"
+        private val json = Http.json
+
+        /** Emotes with their CSS box; a malformed entry is skipped rather than losing them all. */
+        fun parseEmotes(emotesJson: String, emotesCss: String): List<Emote> {
+            val css = EmoteCss.parse(emotesCss)
+            return entries(emotesJson, EmoteJson.serializer()).mapNotNull { e ->
+                val img = e.image.firstOrNull() ?: return@mapNotNull null
+                if (img.url.isBlank() || img.width <= 0 || img.height <= 0) return@mapNotNull null
+                val style = css[e.prefix]
+                // The CSS box can be narrower than the image (sprite sheets, dggL's single heart)
+                val width = style?.width?.takeIf { it in 1 until img.width } ?: img.width
+                Emote(
+                    prefix = e.prefix,
+                    url = img.url,
+                    mime = img.mime ?: "image/png",
+                    width = width,
+                    height = style?.height ?: img.height,
+                    sheetWidth = img.width,
+                    minimumSubTier = e.minimumSubTier,
+                    twitch = e.twitch,
+                    creator = e.creator?.takeIf { it.isNotBlank() },
+                    sprite = style?.sprite?.takeIf { width < img.width },
+                    restOffset = if (width < img.width) style?.restOffset ?: 0 else 0,
+                )
+            }
+        }
+
+        fun parseFlairs(flairsJson: String): Map<String, Flair> = entries(flairsJson, FlairJson.serializer()).associate { f ->
             val img = f.image.firstOrNull()
             f.name to Flair(
                 name = f.name,
@@ -107,56 +119,15 @@ class ChatAssets(context: Context) {
                 height = img?.height ?: 0,
             )
         }
-    }
 
-    private data class CssRule(
-        var width: Int? = null,
-        var height: Int? = null,
-        var durationMs: Int? = null,
-        var iterations: Int? = null,
-        var holdLastFrame: Boolean = false,
-    )
-
-    private fun parseEmoteCss(css: String): Map<String, CssRule> {
-        val rules = HashMap<String, CssRule>()
-        val block = Regex("""(^|[\s,}])\.emote\.([A-Za-z0-9_-]+)\s*\{([^{}]*)\}""")
-        for (m in block.findAll(css)) {
-            val prefix = m.groupValues[2]
-            // ".msg-chat .emote.X" only shifts the emote; the size lives on the bare selector
-            val start = m.range.first
-            val lineStart = css.lastIndexOf('\n', start).coerceAtLeast(0)
-            if (css.substring(lineStart, start + 1).contains(".msg-chat")) continue
-            val body = m.groupValues[3]
-            val rule = rules.getOrPut(prefix) { CssRule() }
-            Regex("""(?<![-\w])width:\s*([\d.]+)px""").find(body)?.let { rule.width = it.groupValues[1].toFloat().roundToInt() }
-            Regex("""(?<![-\w])height:\s*([\d.]+)px""").find(body)?.let { rule.height = it.groupValues[1].toFloat().roundToInt() }
-            Regex("""(?<![-\w])animation:\s*([^;]+)""").find(body)?.let { parseAnimation(it.groupValues[1], rule) }
-        }
-        return rules
-    }
-
-    private fun parseAnimation(value: String, rule: CssRule) {
-        if (value.trim() == "none") return
-        val tokens = value.trim().split(Regex("\\s+"))
-        var duration: Int? = null
-        var iterations: Int? = null
-        tokens.drop(1).forEach { t ->
-            when {
-                t.startsWith("steps(") -> Unit
-                t.endsWith("ms") && t.dropLast(2).toFloatOrNull() != null -> if (duration == null) duration = t.dropLast(2).toFloat().roundToInt()
-                t.endsWith("s") && t.dropLast(1).toFloatOrNull() != null -> if (duration == null) duration = (t.dropLast(1).toFloat() * 1000).roundToInt()
-                t == "infinite" -> iterations = 0
-                t.toIntOrNull() != null -> iterations = t.toInt()
-                t == "forwards" || t == "both" -> rule.holdLastFrame = true
+        private fun <T> entries(text: String, serializer: KSerializer<T>): List<T> {
+            val array = json.parseToJsonElement(text) as? JsonArray ?: return emptyList()
+            return array.mapNotNull { el ->
+                runCatching { json.decodeFromJsonElement(serializer, el) }
+                    .onFailure { Log.w(TAG, "skipping a malformed CDN entry: ${it.message}") }
+                    .getOrNull()
             }
         }
-        rule.durationMs = duration ?: rule.durationMs
-        rule.iterations = iterations ?: rule.iterations ?: 1
-    }
-
-    companion object {
-        private const val TAG = "ChatAssets"
-        const val CDN = "https://r2cdn.destiny.gg"
 
         fun parseColor(hex: String): Long? {
             val h = hex.removePrefix("#")

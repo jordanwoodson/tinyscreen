@@ -16,7 +16,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -44,6 +50,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
@@ -108,30 +116,42 @@ fun EmotePickerSheet(
                 }
             }
         }
-        LazyColumn(Modifier.fillMaxWidth().fillMaxHeight(0.75f)) {
+        // A lazy grid: only the emotes on screen are composed, not all ~350 at once
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(52.dp),
+            modifier = Modifier.fillMaxWidth().fillMaxHeight(0.75f),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
             sections.forEach { (_, title, list) ->
-                item(key = "h$title") {
-                    Text(title, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp))
+                item(key = "h$title", span = { GridItemSpan(maxLineSpan) }) {
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.padding(start = 4.dp, top = 12.dp, bottom = 4.dp).semantics { heading() },
+                    )
                 }
-                item(key = "g$title") {
-                    FlowRow(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        list.forEach { e ->
-                            val allowed = me?.canUse(e) ?: (e.minimumSubTier == 0 && !e.twitch)
-                            Box(
-                                Modifier
-                                    .background(Color(0xFF1A1A1A), RoundedCornerShape(6.dp))
-                                    .combinedClickable(
-                                        onClick = { if (allowed) onPick(e.prefix) else preview = e },
-                                        onLongClick = { preview = e },
-                                    )
-                                    .padding(4.dp)
-                                    .alpha(if (allowed) 1f else 0.35f),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                EmoteImage(e, scale, animate = false)
-                                if (!allowed) Icon(Icons.Filled.Lock, null, tint = Color.White, modifier = Modifier.size(12.dp).align(Alignment.BottomEnd))
-                            }
-                        }
+                items(list, key = { "e" + it.prefix }) { e ->
+                    val allowed = me?.canUse(e) ?: (e.minimumSubTier == 0 && !e.twitch)
+                    Box(
+                        Modifier
+                            .height(48.dp)
+                            .background(Color(0xFF1A1A1A), RoundedCornerShape(6.dp))
+                            .combinedClickable(
+                                onClickLabel = if (allowed) "Insert" else "Show details",
+                                onClick = { if (allowed) onPick(e.prefix) else preview = e },
+                                onLongClickLabel = "Show details",
+                                onLongClick = { preview = e },
+                            )
+                            .padding(4.dp)
+                            .alpha(if (allowed) 1f else 0.35f),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        // Wide emotes shrink to fit the cell
+                        val fit = minOf(scale, 44f / e.width.coerceAtLeast(1), 40f / e.height.coerceAtLeast(1))
+                        EmoteImage(e, fit, animate = false)
+                        if (!allowed) Icon(Icons.Filled.Lock, "Locked", tint = Color.White, modifier = Modifier.size(12.dp).align(Alignment.BottomEnd))
                     }
                 }
             }
