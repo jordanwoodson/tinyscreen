@@ -10,8 +10,12 @@ import android.os.Bundle
 import android.provider.Settings
 import android.util.Rational
 import android.view.OrientationEventListener
+import android.view.View
+import android.view.ViewGroup
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.SystemBarStyle
+import androidx.activity.addCallback
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -57,6 +61,11 @@ class MainActivity : ComponentActivity(), HostActions {
     private var lockedOrientation: Int? = null
     private var orientationListener: OrientationEventListener? = null
 
+    /** An HTML5 player's fullscreen view, covering the whole window. */
+    private var webFullscreenView: View? = null
+    private var webFullscreenBack: OnBackPressedCallback? = null
+    private var rotatedForWebFullscreen = false
+
     private val playerListener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
             if (events.containsAny(
@@ -65,8 +74,7 @@ class MainActivity : ComponentActivity(), HostActions {
                     Player.EVENT_PLAYBACK_STATE_CHANGED,
                 )
             ) {
-                updatePipParams()
-                window.decorView.keepScreenOn = player.isPlaying
+                onPlayingChanged()
             }
         }
     }
@@ -86,11 +94,14 @@ class MainActivity : ComponentActivity(), HostActions {
         super.onCreate(savedInstanceState)
         isLandscape.value = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         applySystemBars()
-        webEmbed.attach(this)
+        webEmbed.attach(this, openUrl = ::openExternal, showFullscreen = ::showWebFullscreen)
         addOnPictureInPictureModeChangedListener(pipListener)
         graph.player.player.addListener(playerListener)
         lifecycleScope.launch {
             graph.settings.settings.collect { updatePipParams() }
+        }
+        lifecycleScope.launch {
+            webEmbed.playing.collect { onPlayingChanged() }
         }
 
         setContent {
@@ -139,6 +150,7 @@ class MainActivity : ComponentActivity(), HostActions {
         val token = SessionToken(this, ComponentName(this, PlaybackService::class.java))
         controllerFuture = MediaController.Builder(this, token).buildAsync()
         orientationListener?.takeIf { it.canDetectOrientation() }?.enable()
+        webEmbed.onForeground()
     }
 
     override fun onStop() {
@@ -150,6 +162,8 @@ class MainActivity : ComponentActivity(), HostActions {
         if (pipDismissed || (!settings.backgroundPlayback && !isInPictureInPictureMode && !isChangingConfigurations)) {
             graph.player.player.pause()
         }
+        // A web player has no media notification to stop it from, so it never plays in the background
+        if (!isInPictureInPictureMode && !isChangingConfigurations) webEmbed.onBackground()
     }
 
     override fun onDestroy() {
@@ -169,7 +183,7 @@ class MainActivity : ComponentActivity(), HostActions {
     private fun applySystemBars() {
         val controller = WindowCompat.getInsetsController(window, window.decorView)
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        if (isLandscape.value) {
+        if (isLandscape.value || webFullscreenView != null) {
             controller.hide(WindowInsetsCompat.Type.systemBars())
         } else {
             controller.show(WindowInsetsCompat.Type.systemBars())
@@ -183,7 +197,7 @@ class MainActivity : ComponentActivity(), HostActions {
 
     override fun enterPip() {
         val player = graph.player.player
-        if (player.mediaItemCount == 0) return
+        if (player.mediaItemCount == 0 && !webEmbed.active.value) return
         runCatching { enterPictureInPictureMode(buildPipParams()) }
     }
 
@@ -211,12 +225,39 @@ class MainActivity : ComponentActivity(), HostActions {
         }
     }
 
+    /** Shows an HTML5 player's fullscreen [view] over the whole window, turning the phone sideways; null ends it. */
+    private fun showWebFullscreen(view: View?) {
+        val decor = window.decorView as ViewGroup
+        webFullscreenView?.let { decor.removeView(it) }
+        webFullscreenBack?.remove()
+        webFullscreenBack = null
+        webFullscreenView = view
+        if (view != null) {
+            decor.addView(view, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            // Added last, so Back leaves the player's fullscreen before anything else
+            webFullscreenBack = onBackPressedDispatcher.addCallback(this) { webEmbed.exitFullscreen() }
+            if (!isLandscape.value) {
+                rotatedForWebFullscreen = true
+                setFullscreen(true)
+            }
+        } else if (rotatedForWebFullscreen) {
+            rotatedForWebFullscreen = false
+            setFullscreen(false)
+        }
+        applySystemBars()
+    }
+
+    private fun onPlayingChanged() {
+        updatePipParams()
+        window.decorView.keepScreenOn = graph.player.player.isPlaying || webEmbed.playing.value
+    }
+
     // --- Picture in picture ---
 
     private fun buildPipParams(): PictureInPictureParams {
         val player = graph.player.player
         val size = player.videoSize
-        val ratio = if (size.width > 0 && size.height > 0) {
+        val ratio = if (size.width > 0 && size.height > 0 && !webEmbed.active.value) {
             val r = size.width.toFloat() * size.pixelWidthHeightRatio / size.height
             when {
                 r > 2.39f -> Rational(239, 100)
@@ -229,7 +270,7 @@ class MainActivity : ComponentActivity(), HostActions {
         val settings = graph.settings.settings.value
         return PictureInPictureParams.Builder()
             .setAspectRatio(ratio)
-            .setAutoEnterEnabled(settings.autoPip && player.isPlaying)
+            .setAutoEnterEnabled(settings.autoPip && (player.isPlaying || webEmbed.playing.value))
             .setSeamlessResizeEnabled(false)
             .apply { videoBounds?.let { setSourceRectHint(it) } }
             .build()

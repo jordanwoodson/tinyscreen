@@ -280,7 +280,7 @@ private fun MainScreen(
                         content = vm.content.collectAsState().value,
                     )
                     if (chatOnly) {
-                        MiniPlayerBar(vm = vm, onExpand = { chatOnly = false })
+                        MiniPlayerBar(vm = vm, webEmbed = webEmbed, onExpand = { chatOnly = false })
                     } else {
                         stream(Modifier.fillMaxWidth().aspectRatio(16f / 9f), false, false)
                         if (!cinema) StreamControlsFor(vm, host, activity)
@@ -458,9 +458,14 @@ private fun titleFor(content: Content): String? = when (content) {
 }
 
 @Composable
-private fun MiniPlayerBar(vm: BigscreenViewModel, onExpand: () -> Unit) {
+private fun MiniPlayerBar(vm: BigscreenViewModel, webEmbed: WebEmbedHolder, onExpand: () -> Unit) {
     val content by vm.content.collectAsState()
+    val playback by vm.playback.collectAsState()
     val state = io.github.jordanwoodson.tinyscreen.player.rememberPlayerUiState(vm.player.player)
+    // A web player keeps playing out of sight (see WebEmbedHolder), so the button controls whichever is in use
+    val web = playback is Playback.Web
+    val webPlaying by webEmbed.playing.collectAsState()
+    val playing = if (web) webPlaying else state.playWhenReady
     Row(
         Modifier.fillMaxWidth().height(48.dp).background(MaterialTheme.colorScheme.surfaceContainer).clickable(onClick = onExpand)
             .padding(horizontal = 8.dp),
@@ -469,8 +474,14 @@ private fun MiniPlayerBar(vm: BigscreenViewModel, onExpand: () -> Unit) {
         Icon(Icons.Filled.Tv, null, tint = MaterialTheme.colorScheme.primary)
         Spacer(Modifier.width(8.dp))
         Text(titleFor(content) ?: content.embed?.displayId ?: "Destiny is offline", maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f), fontSize = 13.sp)
-        IconButton(onClick = { if (state.playWhenReady) vm.player.player.pause() else vm.player.player.play() }) {
-            Icon(if (state.playWhenReady) Icons.Filled.Pause else Icons.Filled.PlayArrow, "Play/pause")
+        IconButton(onClick = {
+            when {
+                web -> webEmbed.togglePlayback()
+                playing -> vm.player.player.pause()
+                else -> vm.player.player.play()
+            }
+        }) {
+            Icon(if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, "Play/pause")
         }
     }
 }

@@ -21,9 +21,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.AndroidViewModel
+import androidx.webkit.JavaScriptReplyProxy
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import io.github.jordanwoodson.tinyscreen.TinyscreenApp
 import io.github.jordanwoodson.tinyscreen.adblock.AdBlocker
 import io.github.jordanwoodson.tinyscreen.net.Http
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 const val DGG_ORIGIN = "https://www.destiny.gg"
 
@@ -75,6 +81,47 @@ fun createWebView(
 }
 
 /**
+ * Origins of the players the web player embeds (see [io.github.jordanwoodson.tinyscreen.stream.Embed.webEmbedUrl]).
+ * Scripts that must reach inside the player iframes are scoped to these.
+ */
+internal val PLAYER_ORIGINS = setOf(
+    "https://player.twitch.tv", "https://clips.twitch.tv",
+    "https://www.youtube.com", "https://www.youtube-nocookie.com",
+    "https://player.kick.com", "https://kick.com",
+    "https://www.facebook.com",
+    "https://rumble.com",
+    "https://player.vimeo.com",
+    "https://player.angelthump.com",
+)
+
+/**
+ * Runs in each player frame: tells the app whether its video or audio is playing, and pauses or
+ * resumes it when asked, through the `TinyscreenMedia` object that [WebEmbedHolder] injects.
+ */
+private val MEDIA_SCRIPT = """
+    (function(){
+      var bridge = window.TinyscreenMedia;
+      if (!bridge || window.__tinyscreenMedia) return;
+      window.__tinyscreenMedia = true;
+      var last = null, current = null;
+      function media(){ return document.querySelectorAll('video,audio'); }
+      function report(e){
+        if (e && e.target instanceof HTMLMediaElement) current = e.target;
+        var playing = false;
+        media().forEach(function(m){ if (!m.paused && !m.ended) playing = true; });
+        var state = playing ? 'playing' : 'paused';
+        if (state !== last) { last = state; bridge.postMessage(state); }
+      }
+      ['play', 'playing', 'pause', 'ended', 'emptied'].forEach(function(t){ document.addEventListener(t, report, true); });
+      window.addEventListener('pagehide', function(){ last = 'paused'; bridge.postMessage('paused'); });
+      bridge.onmessage = function(e){
+        if (e.data === 'pause') media().forEach(function(m){ m.pause(); });
+        else if (e.data === 'play' && current) current.play();
+      };
+    })();
+""".trimIndent()
+
+/**
  * Owns the web player's WebView outside composition, so rotating, picture-in-picture, Settings and
  * activity recreation (font size, language) move the player around instead of reloading the embed.
  * It lives in the activity's ViewModelStore, so it goes away when the activity finishes for good.
@@ -84,24 +131,65 @@ class WebEmbedHolder(app: Application) : AndroidViewModel(app) {
 
     // A WebView keeps the context it was built with; point it at whichever activity is current
     private val context = MutableContextWrapper(app)
-    private val fullscreenHost = FullscreenChromeClient()
+    private val chrome = FullscreenChromeClient()
     private var webView: WebView? = null
     private var loadedUrl: String? = null
+    private var onOpenUrl: ((String) -> Unit)? = null
+    private var onFullscreen: ((View?) -> Unit)? = null
 
-    fun attach(activity: Activity) {
+    /** Whether the player frames report their playback state; without it, a loaded player counts as playing. */
+    private var reportsMedia = false
+    private val frames = mutableMapOf<JavaScriptReplyProxy, Boolean>()
+
+    private val _active = MutableStateFlow(false)
+    /** Whether an embed is loaded. */
+    val active: StateFlow<Boolean> = _active.asStateFlow()
+
+    private val _playing = MutableStateFlow(false)
+    /** Whether the embed is playing video or audio, as far as the player frames report it. */
+    val playing: StateFlow<Boolean> = _playing.asStateFlow()
+
+    /**
+     * Connects the player to [activity]. Links clicked inside a player go to [openUrl]; HTML5
+     * fullscreen hands its view to [showFullscreen] to cover the window (null when it ends).
+     */
+    fun attach(activity: Activity, openUrl: (String) -> Unit, showFullscreen: (View?) -> Unit) {
         context.baseContext = activity
+        onOpenUrl = openUrl
+        onFullscreen = showFullscreen
     }
 
     fun detach(activity: Activity) {
-        if (context.baseContext === activity) context.baseContext = getApplication()
+        if (context.baseContext !== activity) return
+        exitFullscreen()
+        context.baseContext = getApplication()
+        onOpenUrl = null
+        onFullscreen = null
     }
 
     private fun view(): WebView = webView ?: createWebView(
         context,
         adblock = { graph.settings.settings.value.adblock },
         userAgent = Http.DESKTOP_UA,
-        chrome = fullscreenHost,
-    ).also { webView = it }
+        // The page itself is ours; any top-level navigation is a link clicked in the player
+        onNavigate = { uri ->
+            onOpenUrl?.invoke(uri.toString())
+            true
+        },
+        chrome = chrome,
+    ).also { view ->
+        webView = view
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) &&
+            WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
+        ) {
+            WebViewCompat.addWebMessageListener(view, "TinyscreenMedia", PLAYER_ORIGINS) { _, message, _, _, frame ->
+                frames[frame] = message.data == "playing"
+                _playing.value = frames.values.any { it }
+            }
+            WebViewCompat.addDocumentStartJavaScript(view, MEDIA_SCRIPT, PLAYER_ORIGINS)
+            reportsMedia = true
+        }
+    }
 
     /**
      * Plays [embedUrl] inside an iframe whose parent origin is destiny.gg — the same way the bigscreen
@@ -111,26 +199,53 @@ class WebEmbedHolder(app: Application) : AndroidViewModel(app) {
     fun show(embedUrl: String?) {
         if (embedUrl == loadedUrl) return
         loadedUrl = embedUrl
+        frames.clear()
+        _active.value = embedUrl != null
         if (embedUrl == null) {
+            _playing.value = false
+            exitFullscreen()
             webView?.apply {
                 stopLoading()
                 loadUrl("about:blank")
             }
             return
         }
-        view().loadDataWithBaseURL("$DGG_ORIGIN/bigscreen", iframeHtml(embedUrl), "text/html", "utf-8", null)
+        val view = view()
+        _playing.value = !reportsMedia
+        view.loadDataWithBaseURL("$DGG_ORIGIN/bigscreen", iframeHtml(embedUrl), "text/html", "utf-8", null)
     }
+
+    /** Pauses whatever the player frames are playing. */
+    fun pause() {
+        frames.keys.forEach { it.postMessage("pause") }
+    }
+
+    /** Resumes the media that last played, or pauses it if it's playing. */
+    fun togglePlayback() {
+        val message = if (_playing.value) "pause" else "play"
+        frames.keys.forEach { it.postMessage(message) }
+    }
+
+    /** The app went to the background (not into picture-in-picture): a web player can't keep playing there. */
+    fun onBackground() {
+        pause()
+        webView?.onPause()
+    }
+
+    fun onForeground() {
+        webView?.onResume()
+    }
+
+    fun exitFullscreen() = chrome.exit()
 
     internal fun attachTo(frame: FrameLayout) {
         val view = view()
         (view.parent as? ViewGroup)?.removeView(view)
         frame.addView(view)
-        fullscreenHost.container = frame
     }
 
     internal fun detachFrom(frame: FrameLayout) {
         webView?.let { if (it.parent === frame) frame.removeView(it) }
-        if (fullscreenHost.container === frame) fullscreenHost.container = null
     }
 
     override fun onCleared() {
@@ -140,6 +255,30 @@ class WebEmbedHolder(app: Application) : AndroidViewModel(app) {
             view.destroy()
         }
         webView = null
+    }
+
+    /** Hands an HTML5 player's fullscreen view to the activity, which shows it over the whole window. */
+    private inner class FullscreenChromeClient : WebChromeClient() {
+        private var callback: CustomViewCallback? = null
+
+        override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+            val show = onFullscreen ?: return callback.onCustomViewHidden()
+            this.callback?.onCustomViewHidden()
+            this.callback = callback
+            show(view)
+        }
+
+        override fun onHideCustomView() {
+            if (callback == null) return
+            callback = null
+            onFullscreen?.invoke(null)
+        }
+
+        fun exit() {
+            val current = callback ?: return
+            current.onCustomViewHidden()
+            onHideCustomView()
+        }
     }
 }
 
@@ -161,26 +300,4 @@ private fun iframeHtml(src: String): String {
         </head><body><iframe src="$safe" allow="autoplay; fullscreen; encrypted-media; picture-in-picture; clipboard-write"
         allowfullscreen referrerpolicy="origin"></iframe></body></html>
     """.trimIndent()
-}
-
-/** Lets HTML5 players go fullscreen inside the embed area. */
-class FullscreenChromeClient : WebChromeClient() {
-    var container: FrameLayout? = null
-    private var custom: View? = null
-    private var callback: CustomViewCallback? = null
-
-    override fun onShowCustomView(view: View, callback: CustomViewCallback) {
-        val host = container ?: return callback.onCustomViewHidden()
-        custom?.let { host.removeView(it) }
-        custom = view
-        this.callback = callback
-        host.addView(view, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-    }
-
-    override fun onHideCustomView() {
-        custom?.let { container?.removeView(it) }
-        custom = null
-        callback?.onCustomViewHidden()
-        callback = null
-    }
 }
