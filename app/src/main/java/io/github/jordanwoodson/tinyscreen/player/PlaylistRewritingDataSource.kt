@@ -16,6 +16,14 @@ fun interface PlaylistRewriter {
     fun handles(uri: Uri): Boolean = true
 }
 
+/** Applies [rewriters] in order, each to the playlists it handles. */
+class ChainedRewriter(private val rewriters: List<PlaylistRewriter>) : PlaylistRewriter {
+    override fun handles(uri: Uri): Boolean = rewriters.any { it.handles(uri) }
+
+    override fun rewrite(uri: Uri, playlist: String): String =
+        rewriters.fold(playlist) { text, r -> if (r.handles(uri)) r.rewrite(uri, text) ?: text else text }
+}
+
 @UnstableApi
 class PlaylistRewritingDataSource(
     private val upstream: DataSource,
@@ -33,7 +41,8 @@ class PlaylistRewritingDataSource(
     override fun open(dataSpec: DataSpec): Long {
         val active = rewriter()
         val uri = dataSpec.uri
-        val isPlaylist = uri.path?.endsWith(".m3u8") == true || uri.toString().contains(".m3u8")
+        // By path: YouTube's segment URLs have ".../index.m3u8/sq/..." in the middle
+        val isPlaylist = uri.path?.endsWith(".m3u8") == true
         if (active == null || !isPlaylist || !active.handles(uri)) {
             passthrough = true
             return upstream.open(dataSpec)
@@ -52,9 +61,14 @@ class PlaylistRewritingDataSource(
             bufferedUri = upstream.uri
             upstream.close()
         }
-        val original = out.toString(Charsets.UTF_8.name())
-        val rewritten = runCatching { active.rewrite(uri, original) }.getOrNull() ?: original
-        val bytes = rewritten.toByteArray(Charsets.UTF_8)
+        val raw = out.toByteArray()
+        // Only text playlists are rewritten; anything else goes through byte for byte
+        val bytes = if (isTextPlaylist(raw)) {
+            val original = String(raw, Charsets.UTF_8)
+            (runCatching { active.rewrite(uri, original) }.getOrNull() ?: original).toByteArray(Charsets.UTF_8)
+        } else {
+            raw
+        }
         val skip = dataSpec.position.coerceIn(0, bytes.size.toLong()).toInt()
         buffer = bytes
         position = skip
@@ -72,6 +86,14 @@ class PlaylistRewritingDataSource(
         return count
     }
 
+    private fun isTextPlaylist(data: ByteArray): Boolean {
+        var i = 0
+        // A UTF-8 byte order mark and leading whitespace are tolerated
+        if (data.size >= 3 && data[0] == 0xEF.toByte() && data[1] == 0xBB.toByte() && data[2] == 0xBF.toByte()) i = 3
+        while (i < data.size && data[i].toInt().toChar().isWhitespace()) i++
+        return data.size - i >= MAGIC.size && MAGIC.indices.all { data[i + it] == MAGIC[it] }
+    }
+
     override fun getUri(): Uri? = if (passthrough) upstream.uri else bufferedUri
 
     override fun getResponseHeaders(): Map<String, List<String>> =
@@ -81,6 +103,10 @@ class PlaylistRewritingDataSource(
         if (passthrough) upstream.close()
         buffer = null
         position = 0
+    }
+
+    private companion object {
+        val MAGIC = "#EXTM3U".toByteArray(Charsets.US_ASCII)
     }
 
     class Factory(

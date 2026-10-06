@@ -64,7 +64,7 @@ data class ResolvedStream(
     val startPositionMs: Long = C.TIME_UNSET,
     /** Rewrites playlists for this stream (Twitch ad stripping). */
     val rewriter: PlaylistRewriter? = null,
-    /** How far behind the live edge to sit in low-latency mode. */
+    /** How far behind the live edge to sit in low-latency mode, at least ([LiveHoldBack] may add more). */
     val liveTargetOffsetMs: Long = 4_000,
     /** Re-resolves the stream (fresh tokens) when playback hits an unrecoverable error. */
     val refresh: (suspend () -> ResolvedStream)? = null,
@@ -170,7 +170,7 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope, private 
             field = value
             _current.value?.let {
                 currentRewriter = rewriterFor(it)
-                AdBreakMonitor.claim(currentRewriter)
+                AdBreakMonitor.claim(adFilterFor(it))
             }
         }
 
@@ -236,7 +236,13 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope, private 
         }
     }
 
-    private fun rewriterFor(stream: ResolvedStream): PlaylistRewriter? = stream.rewriter?.takeIf { blockAds }
+    private fun adFilterFor(stream: ResolvedStream): PlaylistRewriter? = stream.rewriter?.takeIf { blockAds }
+
+    private fun rewriterFor(stream: ResolvedStream): PlaylistRewriter? {
+        val adFilter = adFilterFor(stream)
+        val holdBack = if (lowLatency && stream.isLive && stream.kind == StreamKind.Hls) LiveHoldBack(stream.liveTargetOffsetMs) else null
+        return if (adFilter != null && holdBack != null) ChainedRewriter(listOf(adFilter, holdBack)) else adFilter ?: holdBack
+    }
 
     /** [keepQuality] keeps a hand-picked quality, for refreshes of the same stream. */
     fun play(stream: ResolvedStream, playWhenReady: Boolean = true, keepQuality: Boolean = false) {
@@ -247,7 +253,7 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope, private 
         _recovery.value = Recovery.None
         currentHeaders = stream.headers
         currentRewriter = rewriterFor(stream)
-        AdBreakMonitor.claim(currentRewriter)
+        AdBreakMonitor.claim(adFilterFor(stream))
         _current.value = stream
         if (!keepQuality) {
             qualityPickedByHand = false
@@ -295,7 +301,8 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope, private 
             .setIsPlayable(true)
             .build()
         val liveConfig = MediaItem.LiveConfiguration.Builder()
-            .setTargetOffsetMs(if (lowLatency) stream.liveTargetOffsetMs else C.TIME_UNSET)
+            // HLS gets its low-latency target from the HOLD-BACK that LiveHoldBack writes into each playlist
+            .setTargetOffsetMs(if (lowLatency && stream.kind != StreamKind.Hls) stream.liveTargetOffsetMs else C.TIME_UNSET)
             .setMinPlaybackSpeed(0.97f)
             .setMaxPlaybackSpeed(1.04f)
             .build()
@@ -319,7 +326,7 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope, private 
                         factory, policy, parserFactory, cmcd,
                         // Swapping between Twitch backup playlists can briefly repeat one; elsewhere
                         // a frozen playlist should be retried promptly
-                        if (rewriterFor(stream) != null) 10.0 else DefaultHlsPlaylistTracker.DEFAULT_PLAYLIST_STUCK_TARGET_DURATION_COEFFICIENT,
+                        if (adFilterFor(stream) != null) 10.0 else DefaultHlsPlaylistTracker.DEFAULT_PLAYLIST_STUCK_TARGET_DURATION_COEFFICIENT,
                         executor,
                     )
                 }
@@ -535,12 +542,6 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope, private 
     }
 
     // --- Live helpers ---
-
-    fun isAtLiveEdge(): Boolean {
-        if (!player.isCurrentMediaItemLive) return false
-        val offset = player.currentLiveOffset
-        return offset == C.TIME_UNSET || offset < 12_000
-    }
 
     fun goLive() {
         player.seekToDefaultPosition()

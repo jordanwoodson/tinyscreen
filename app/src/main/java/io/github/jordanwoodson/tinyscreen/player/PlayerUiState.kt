@@ -15,6 +15,7 @@ import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.VideoSize
 import kotlinx.coroutines.delay
 
@@ -30,6 +31,9 @@ class PlayerUiState(val player: Player) {
     var durationMs by mutableLongStateOf(C.TIME_UNSET)
     var bufferedMs by mutableLongStateOf(0L)
     var liveOffsetMs by mutableLongStateOf(C.TIME_UNSET)
+
+    /** The offset the player aims for (with Low latency off, 3 target durations: 18 s on Twitch). */
+    var liveTargetMs by mutableLongStateOf(C.TIME_UNSET)
     var error by mutableStateOf<PlaybackException?>(player.playerError)
     var videoSize by mutableStateOf(player.videoSize)
     var speed by mutableFloatStateOf(player.playbackParameters.speed)
@@ -38,7 +42,7 @@ class PlayerUiState(val player: Player) {
 
     val isBuffering get() = playbackState == Player.STATE_BUFFERING && playWhenReady
     val isEnded get() = playbackState == Player.STATE_ENDED
-    val atLiveEdge get() = isLive && (liveOffsetMs == C.TIME_UNSET || liveOffsetMs < 12_000)
+    val atLiveEdge get() = isLive && (liveOffsetMs == C.TIME_UNSET || liveOffsetMs < liveEdgeThresholdMs(liveTargetMs))
     val canSeek get() = isSeekable && durationMs != C.TIME_UNSET && durationMs > 0
 
     fun refreshProgress() {
@@ -46,9 +50,16 @@ class PlayerUiState(val player: Player) {
         durationMs = player.duration
         bufferedMs = player.bufferedPosition
         liveOffsetMs = if (player.isCurrentMediaItemLive) player.currentLiveOffset else C.TIME_UNSET
+        liveTargetMs = if (player.isCurrentMediaItemLive && !player.currentTimeline.isEmpty) {
+            player.currentTimeline.getWindow(player.currentMediaItemIndex, window).liveConfiguration?.targetOffsetMs ?: C.TIME_UNSET
+        } else {
+            C.TIME_UNSET
+        }
         isLive = player.isCurrentMediaItemLive
         isSeekable = player.isCurrentMediaItemSeekable
     }
+
+    private val window = Timeline.Window()
 
     val listener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
@@ -87,6 +98,9 @@ fun rememberPlayerUiState(player: Player): PlayerUiState {
     }
     return state
 }
+
+/** Within this of the live edge counts as live: the player's own target plus some drift. */
+fun liveEdgeThresholdMs(targetMs: Long): Long = if (targetMs == C.TIME_UNSET) 12_000 else targetMs + 5_000
 
 fun formatDuration(ms: Long): String {
     if (ms == C.TIME_UNSET || ms < 0) return "0:00"
