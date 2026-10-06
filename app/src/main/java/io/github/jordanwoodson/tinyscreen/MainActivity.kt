@@ -35,6 +35,7 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
+import io.github.jordanwoodson.tinyscreen.chat.ChatNotifier
 import io.github.jordanwoodson.tinyscreen.player.PlaybackService
 import io.github.jordanwoodson.tinyscreen.ui.TinyscreenRoot
 import io.github.jordanwoodson.tinyscreen.web.WebEmbedHolder
@@ -66,6 +67,9 @@ class MainActivity : ComponentActivity(), HostActions {
 
     /** Links handed to the app (deep links, shares) waiting to be opened by the UI. */
     val incomingLinks = MutableSharedFlow<String>(replay = 1, extraBufferCapacity = 4)
+
+    /** A whisper notification was tapped: the UI shows the Whispers screen. */
+    val openWhispers = MutableSharedFlow<Unit>(replay = 1, extraBufferCapacity = 1)
 
     private var videoBounds: Rect? = null
     private var lockedOrientation: Int? = null
@@ -156,6 +160,11 @@ class MainActivity : ComponentActivity(), HostActions {
         intent ?: return
         // Relaunched from Recents with the intent it was first opened with
         if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
+        intent.getStringExtra(ChatNotifier.EXTRA_WHISPER_FROM)?.let { nick ->
+            graph.chat.openWhisper(nick)
+            openWhispers.tryEmit(Unit)
+            return
+        }
         val link = when (intent.action) {
             Intent.ACTION_VIEW -> intent.dataString
             // Shared styled text arrives as a CharSequence, which getStringExtra drops

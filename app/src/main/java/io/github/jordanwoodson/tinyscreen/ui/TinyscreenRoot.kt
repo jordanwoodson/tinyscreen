@@ -156,6 +156,14 @@ fun TinyscreenRoot(activity: MainActivity, host: HostActions) {
             }
         }
 
+        LaunchedEffect(Unit) {
+            activity.openWhispers.collect {
+                @OptIn(ExperimentalCoroutinesApi::class)
+                activity.openWhispers.resetReplayCache()
+                overlay = Overlay.Whispers
+            }
+        }
+
         Box(Modifier.fillMaxSize()) {
             MainScreen(
                 vm = vm,
