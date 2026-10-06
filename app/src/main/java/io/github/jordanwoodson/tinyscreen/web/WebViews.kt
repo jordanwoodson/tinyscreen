@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.AndroidViewModel
 import androidx.webkit.JavaScriptReplyProxy
+import androidx.webkit.ScriptHandler
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import io.github.jordanwoodson.tinyscreen.TinyscreenApp
@@ -139,6 +140,8 @@ class WebEmbedHolder(app: Application) : AndroidViewModel(app) {
 
     /** Whether the player frames report their playback state; without it, a loaded player counts as playing. */
     private var reportsMedia = false
+    /** Ad hiding inside the player iframes, which [createWebView]'s main-frame script can't reach. */
+    private var cosmeticScript: ScriptHandler? = null
     private val frames = mutableMapOf<JavaScriptReplyProxy, Boolean>()
 
     private val _active = MutableStateFlow(false)
@@ -212,7 +215,20 @@ class WebEmbedHolder(app: Application) : AndroidViewModel(app) {
         }
         val view = view()
         _playing.value = !reportsMedia
+        syncCosmeticScript(view)
         view.loadDataWithBaseURL("$DGG_ORIGIN/bigscreen", iframeHtml(embedUrl), "text/html", "utf-8", null)
+    }
+
+    /** Follows the Block ads setting; a change applies from the next embed loaded. */
+    private fun syncCosmeticScript(view: WebView) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        val wanted = graph.settings.settings.value.adblock
+        if (wanted && cosmeticScript == null) {
+            cosmeticScript = WebViewCompat.addDocumentStartJavaScript(view, AdBlocker.cosmeticScript, PLAYER_ORIGINS)
+        } else if (!wanted) {
+            cosmeticScript?.remove()
+            cosmeticScript = null
+        }
     }
 
     /** Pauses whatever the player frames are playing. */

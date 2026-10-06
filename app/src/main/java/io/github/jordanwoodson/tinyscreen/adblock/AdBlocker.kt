@@ -10,16 +10,17 @@ import java.io.ByteArrayInputStream
  * loads ads in the first place; Twitch's stitched ads are stripped in [io.github.jordanwoodson.tinyscreen.player.TwitchAdFilter].
  */
 object AdBlocker {
+    /** Blocked along with all of their subdomains. */
     private val blockedHosts = setOf(
         // Google ads / IMA / analytics
         "doubleclick.net", "googlesyndication.com", "googleadservices.com", "adservice.google.com",
-        "pagead2.googlesyndication.com", "imasdk.googleapis.com", "google-analytics.com",
-        "googletagmanager.com", "googletagservices.com", "partnerad.l.doubleclick.net",
-        "securepubads.g.doubleclick.net", "tpc.googlesyndication.com", "fundingchoicesmessages.google.com",
-        // Amazon / Twitch ads
-        "amazon-adsystem.com", "aax.amazon-adsystem.com", "c.amazon-adsystem.com",
-        "ads.twitch.tv", "pubads.g.doubleclick.net", "spade.twitch.tv", "countess.twitch.tv",
-        "client-event-reporter.twitch.tv", "sb.scorecardresearch.com", "scorecardresearch.com",
+        "imasdk.googleapis.com", "google-analytics.com", "googletagmanager.com", "googletagservices.com",
+        "fundingchoicesmessages.google.com",
+        // Amazon / Twitch ads and telemetry
+        "amazon-adsystem.com", "ads.twitch.tv", "spade.twitch.tv", "countess.twitch.tv",
+        "client-event-reporter.twitch.tv", "scorecardresearch.com",
+        // Kick and Rumble ads
+        "adsystem.kick.com", "ads.kick.com", "ads.rmbl.ws",
         // Common ad exchanges / trackers
         "adnxs.com", "adsrvr.org", "rubiconproject.com", "pubmatic.com", "openx.net", "criteo.com",
         "criteo.net", "casalemedia.com", "taboola.com", "outbrain.com", "moatads.com", "adsafeprotected.com",
@@ -28,26 +29,38 @@ object AdBlocker {
         "springserve.com", "lijit.com", "sovrn.com", "indexww.com", "bidswitch.net", "contextweb.com",
         "adform.net", "3lift.com", "triplelift.com", "gumgum.com", "zemanta.com", "revcontent.com",
         "mgid.com", "hotjar.com", "mixpanel.com", "segment.io", "segment.com", "branch.io", "amplitude.com",
-        "facebook.net", "connect.facebook.net", "ads-twitter.com", "static.ads-twitter.com", "analytics.twitter.com",
-        "ads.reddit.com", "rumble.com/ads", "a.ads.rmbl.ws", "ads.rmbl.ws", "imasdk.googleapis.com",
-        "adsystem.kick.com", "ads.kick.com", "kick-ads", "ad.doubleclick.net", "stats.g.doubleclick.net",
-        "bat.bing.com", "clarity.ms", "cdn.taboola.com", "s.ytimg.com/yts/jsbin/www-pagead",
-        "youtube.com/api/stats/ads", "youtube.com/pagead", "youtube.com/ptracking", "googleads.g.doubleclick.net",
+        "facebook.net", "ads-twitter.com", "analytics.twitter.com", "ads.reddit.com",
+        "bat.bing.com", "clarity.ms",
     )
 
-    private val blockedPathMarkers = listOf(
-        "/pagead/", "/api/stats/ads", "/ptracking", "/get_midroll_", "/ad_break", "doubleclick",
-        "/ads?", "/adserver", "/ad_status", "&ad_type=", "/vast?", "/vmap",
+    /** Ad paths on hosts that also serve the players themselves. */
+    private val blockedPathPrefixes = mapOf(
+        "rumble.com" to listOf("/ads"),
+    )
+
+    /**
+     * Ad endpoints on any host (YouTube's in particular). Matched against the path alone, so a host
+     * or a query parameter that merely mentions one isn't blocked.
+     */
+    private val blockedPathParts = listOf(
+        "/pagead/", "/api/stats/ads", "/ptracking", "/get_midroll_", "/ad_break", "/adserver", "/ad_status",
     )
 
     fun shouldBlock(url: Uri): Boolean {
-        val host = url.host?.lowercase() ?: return false
-        if (blockedHosts.any { blocked ->
-                if (blocked.contains('/')) url.toString().contains(blocked) else host == blocked || host.endsWith(".$blocked")
-            }
-        ) return true
-        val full = url.toString()
-        return blockedPathMarkers.any { full.contains(it) }
+        val host = url.host?.lowercase()?.removeSuffix(".") ?: return false
+        fun under(domain: String) = host == domain || host.endsWith(".$domain")
+        if (blockedHosts.any(::under)) return true
+
+        val path = url.path.orEmpty().lowercase()
+        if (blockedPathPrefixes.any { (domain, prefixes) -> under(domain) && prefixes.any { path.startsWith(it) } }) return true
+        if (blockedPathParts.any { path.contains(it) }) return true
+
+        // VAST/VMAP ad requests and ad calls: .../ads?…, .../vast?…, .../vmap(.xml)
+        val last = url.lastPathSegment.orEmpty().lowercase()
+        val hasQuery = !url.encodedQuery.isNullOrEmpty()
+        if ((last == "ads" || last == "vast") && hasQuery) return true
+        if (last == "vmap" || last.startsWith("vmap.")) return true
+        return runCatching { url.getQueryParameter("ad_type") != null }.getOrDefault(false)
     }
 
     fun intercept(request: WebResourceRequest, enabled: Boolean): WebResourceResponse? {
@@ -63,12 +76,24 @@ object AdBlocker {
         .ytp-paid-content-overlay, .ytp-suggested-action, .ytp-ce-element { display: none !important; }
     """
 
+    /**
+     * Adds [COSMETIC_CSS] and skips YouTube ads. Safe to run more than once, and at document start
+     * (inside player iframes), before the page has an `<html>` element to add the style to.
+     */
     val cosmeticScript: String = """
         (function(){
-          if (document.getElementById('tinyscreen-adblock')) return;
-          var s = document.createElement('style'); s.id = 'tinyscreen-adblock';
-          s.textContent = ${"`"}${COSMETIC_CSS.trimIndent()}${"`"};
-          (document.head || document.documentElement).appendChild(s);
+          function addStyle(){
+            if (document.getElementById('tinyscreen-adblock')) return;
+            var s = document.createElement('style'); s.id = 'tinyscreen-adblock';
+            s.textContent = ${"`"}${COSMETIC_CSS.trimIndent()}${"`"};
+            (document.head || document.documentElement).appendChild(s);
+          }
+          if (document.documentElement) addStyle();
+          else new MutationObserver(function(_, o){
+            if (document.documentElement) { o.disconnect(); addStyle(); }
+          }).observe(document, { childList: true });
+          if (window.__tinyscreenAdblock) return;
+          window.__tinyscreenAdblock = true;
           // Skip YouTube ads that slip through: jump to the end and click skip
           setInterval(function(){
             var v = document.querySelector('.ad-showing video');
