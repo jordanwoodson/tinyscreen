@@ -435,7 +435,7 @@ class ChatRepository(
         // Combos: consecutive messages that are exactly one emote
         val textOnly = text.replaceFirst(SLASH_WORD, "").trim()
         val emote = assets.emotes.value.byPrefix[textOnly]
-        if (emote != null && user.canUse(emote)) {
+        if (settings.showCombos && emote != null && user.canUse(emote)) {
             when (val last = current.lastOrNull()) {
                 is ChatLine.Combo -> if (!last.completed && last.emote.prefix == textOnly) {
                     replaceLast(last.copy(count = last.count + 1, nicks = last.nicks + user.nick))

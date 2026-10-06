@@ -119,7 +119,7 @@ class ChatAssets(context: Context) {
 
     private fun parseEmoteCss(css: String): Map<String, CssRule> {
         val rules = HashMap<String, CssRule>()
-        val block = Regex("""(^|[\s,}])\.emote\.([A-Za-z0-9_]+)\s*\{([^{}]*)\}""")
+        val block = Regex("""(^|[\s,}])\.emote\.([A-Za-z0-9_-]+)\s*\{([^{}]*)\}""")
         for (m in block.findAll(css)) {
             val prefix = m.groupValues[2]
             // ".msg-chat .emote.X" only shifts the emote; the size lives on the bare selector
