@@ -122,6 +122,9 @@ fun NativeChat(
     LaunchedEffect(Unit) {
         chat.inputRequests.collect { text -> input = TextFieldValue(text, TextRange(text.length)) }
     }
+    LaunchedEffect(Unit) {
+        chat.restoreRequests.collect { text -> if (input.text.isBlank()) input = TextFieldValue(text, TextRange(text.length)) }
+    }
     LaunchedEffect(Unit) { chat.embedRequests.collect { onOpenEmbed(it) } }
     LaunchedEffect(Unit) { chat.loginRequests.collect { onLogin() } }
 
@@ -272,9 +275,10 @@ fun NativeChat(
             chat = chat,
             settings = settings,
             onSend = {
-                chat.send(input.text)
-                input = TextFieldValue("")
+                val text = input.text
                 follow = true
+                // Only cleared once it's gone: a failed send keeps what you typed
+                scope.launch { if (chat.submit(text) && input.text == text) input = TextFieldValue("") }
             },
             onLogin = onLogin,
         )
@@ -434,8 +438,15 @@ private fun ChatInput(
             } else {
                 null
             },
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send),
-            keyboardActions = KeyboardActions(onSend = { if (me == null) onLogin() else onSend() }),
+            // No auto-capitals: a lowercase emote (monkaS, catJAM) as the first word would stop being an emote
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, imeAction = ImeAction.Send),
+            // Signed out, sending keeps the text for after you sign in and opens the login
+            keyboardActions = KeyboardActions(onSend = { if (value.text.isBlank() && me == null) onLogin() else onSend() }),
+            suffix = if (value.text.length > 400) {
+                { Text("${value.text.length}/512", fontSize = 11.sp, color = if (value.text.length > 512) ChatColors.Error else Color(0xFF838383)) }
+            } else {
+                null
+            },
             maxLines = 5,
             textStyle = MaterialTheme.typography.bodyMedium.copy(color = ChatColors.Bright, fontSize = (14 * settings.chatFontScale).sp),
             shape = RoundedCornerShape(10.dp),
@@ -447,7 +458,7 @@ private fun ChatInput(
             ),
             modifier = Modifier.weight(1f).heightIn(min = 48.dp, max = 140.dp),
         )
-        IconButton(onClick = { if (me == null) onLogin() else onSend() }, enabled = value.text.isNotBlank() || me == null) {
+        IconButton(onClick = { if (value.text.isBlank() && me == null) onLogin() else onSend() }, enabled = value.text.isNotBlank() || me == null) {
             Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = if (value.text.isNotBlank()) MaterialTheme.colorScheme.primary else Color(0xFF555555))
         }
     }

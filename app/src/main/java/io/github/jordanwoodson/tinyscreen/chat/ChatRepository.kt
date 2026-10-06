@@ -2,6 +2,7 @@ package io.github.jordanwoodson.tinyscreen.chat
 
 import android.content.Context
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import io.github.jordanwoodson.tinyscreen.net.Http
 import io.github.jordanwoodson.tinyscreen.net.WebViewCookieJar
 import io.github.jordanwoodson.tinyscreen.settings.AppSettings
@@ -137,6 +138,10 @@ class ChatRepository(
     /** Text the UI should place in the input box (/r, whisper buttons, saved pre-login text). */
     private val _inputRequests = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val inputRequests: SharedFlow<String> = _inputRequests.asSharedFlow()
+
+    /** A message the server rejected, to put back in the input box if it's still empty. */
+    private val _restoreRequests = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val restoreRequests: SharedFlow<String> = _restoreRequests.asSharedFlow()
 
     private val _embedRequests = MutableSharedFlow<Embed>(extraBufferCapacity = 4)
     val embedRequests: SharedFlow<Embed> = _embedRequests.asSharedFlow()
@@ -338,6 +343,14 @@ class ChatRepository(
         return s.send("$event $payload")
     }
 
+    /** Feeds a frame as if the socket had sent it, and waits for it to be handled. For tests. */
+    @VisibleForTesting
+    internal suspend fun receive(frame: String) = withContext(dispatcher) { dispatch(frame, history = false) }
+
+    /** Waits for work already queued on the chat thread. For tests. */
+    @VisibleForTesting
+    internal suspend fun idle() = withContext(dispatcher) {}
+
     // --- Dispatch ---
 
     private fun dispatch(text: String, history: Boolean) {
@@ -442,6 +455,7 @@ class ChatRepository(
                 _poll.value = poll.copy(totals = totals, totalVotes = poll.totalVotes + qty)
             }
             "VOTECOUNTED" -> o?.let {
+                votePending = false
                 val poll = _poll.value ?: return@let
                 _poll.value = poll.copy(myVote = it["vote"].long()?.toInt(), canVote = false)
             }
@@ -666,11 +680,20 @@ class ChatRepository(
 
     private fun onError(o: JsonObject?, p: JsonElement) {
         val code = o?.get("description").str() ?: (p as? JsonPrimitive)?.contentOrNull ?: "unknown"
-        // A rejected send shouldn't leave its optimistic line behind
+        // A rejected send shouldn't leave its optimistic line behind, and its text goes back in the box
         if (code in SEND_ERRORS) {
             val current = _lines.value
             val idx = current.indexOfLast { it is ChatLine.User && it.pending }
             if (idx >= 0) _lines.value = current.toMutableList().also { it.removeAt(idx) }
+            val sent = lastSent
+            if (sent != null && now() - lastSentAt < 15_000) {
+                lastSent = null
+                _restoreRequests.tryEmit(sent)
+            }
+        }
+        if (votePending && code != "alreadyvoted") {
+            votePending = false
+            _poll.value?.takeIf { !it.ended }?.let { _poll.value = it.copy(canVote = true, myVote = null) }
         }
         when (code) {
             "banned" -> {
@@ -751,7 +774,19 @@ class ChatRepository(
     }
 
     fun vote(option: Int) {
-        sendRaw("CASTVOTE", buildJsonObject { put("vote", option.toString()) })
+        scope.launch { castVote(option) }
+    }
+
+    private var votePending = false
+
+    /** Votes once: the poll stops taking taps straight away rather than when the server confirms. */
+    private fun castVote(option: Int): Boolean {
+        val poll = _poll.value ?: return false
+        if (!poll.canVote || poll.ended) return false
+        if (!sendRaw("CASTVOTE", buildJsonObject { put("vote", option.toString()) })) return false
+        votePending = true
+        _poll.value = poll.copy(canVote = false, myVote = option)
+        return true
     }
 
     fun dismissPoll() {
@@ -887,6 +922,7 @@ class ChatRepository(
     }
 
     private fun info(kind: InfoKind, text: String, link: String? = null, linkLabel: String? = null) {
+        if (kind == InfoKind.Error) inputErrors++
         append(ChatLine.Info(key(), now(), kind, text, link, linkLabel))
     }
 
@@ -950,66 +986,98 @@ class ChatRepository(
     }
 
     fun sendWhisper(nick: String, text: String) {
+        scope.launch { whisper(nick, text) }
+    }
+
+    private fun whisper(nick: String, text: String): Boolean {
         val msg = text.trim()
-        if (msg.isEmpty()) return
-        scope.launch {
-            if (!validNick(nick)) return@launch info(InfoKind.Error, "Invalid nick - /msg nick message")
-            if (nick.equals(_me.value?.nick, ignoreCase = true)) return@launch info(InfoKind.Error, "Cannot send a message to yourself")
-            if (sendRaw("PRIVMSG", buildJsonObject { put("nick", nick); put("data", msg) })) {
-                if (_openConversation.value.equals(nick, ignoreCase = true)) {
-                    _conversationMessages.value = _conversationMessages.value + WhisperMessage(null, _me.value?.nick.orEmpty(), nick, msg, now())
-                }
-                val existing = _conversations.value.firstOrNull { it.username.equals(nick, ignoreCase = true) }
-                _conversations.value = listOf(Conversation(existing?.userId, existing?.username ?: nick, msg, now(), 0, true)) +
-                    _conversations.value.filterNot { it.username.equals(nick, ignoreCase = true) }
-            }
+        if (msg.isEmpty()) return false
+        if (!validNick(nick)) return info(InfoKind.Error, "Invalid nick - /msg nick message").let { false }
+        if (nick.equals(_me.value?.nick, ignoreCase = true)) return info(InfoKind.Error, "Cannot send a message to yourself").let { false }
+        if (!sendRaw("PRIVMSG", buildJsonObject { put("nick", nick); put("data", msg) })) return false
+        if (_openConversation.value.equals(nick, ignoreCase = true)) {
+            _conversationMessages.value = _conversationMessages.value + WhisperMessage(null, _me.value?.nick.orEmpty(), nick, msg, now())
         }
+        val existing = _conversations.value.firstOrNull { it.username.equals(nick, ignoreCase = true) }
+        _conversations.value = listOf(Conversation(existing?.userId, existing?.username ?: nick, msg, now(), 0, true)) +
+            _conversations.value.filterNot { it.username.equals(nick, ignoreCase = true) }
+        return true
     }
 
     // --- Sending ---
 
+    /** Sends a line or runs a command without waiting for the result. */
     fun send(input: String) {
-        val text = input.trim()
-        if (text.isEmpty()) return
-        scope.launch {
-            sentHistory.remove(text)
-            sentHistory.addFirst(text)
-            while (sentHistory.size > 20) sentHistory.removeLast()
-
-            val cmd = COMMAND.find(text)
-            if (cmd != null && !text.startsWith("/me ", ignoreCase = true)) {
-                val name = cmd.groupValues[1].uppercase(Locale.ROOT)
-                val rest = text.substring(cmd.range.last + 1)
-                runCommand(name, rest.split(' ').filter { it.isNotEmpty() }, rest)
-                return@launch
-            }
-            val me = _me.value
-            if (me == null) {
-                prefs.edit().putString("pre_login_text", text).apply()
-                info(InfoKind.Info, "Want to chat? You need to be signed in. Become part of the community and have your say!")
-                _loginRequests.tryEmit(Unit)
-                return@launch
-            }
-            val poll = _poll.value
-            val n = text.toIntOrNull()
-            if (poll != null && !poll.ended && n != null && n in 1..poll.options.size) {
-                if (!poll.canVote) return@launch info(InfoKind.Error, "You have already voted!")
-                if (sendRaw("CASTVOTE", buildJsonObject { put("vote", n.toString()) })) info(InfoKind.Info, "Your vote has been cast!")
-                return@launch
-            }
-            sendMessage(text, me)
-        }
+        scope.launch { handleInput(input) }
     }
 
-    private fun sendMessage(text: String, me: ChatUser) {
-        if (text.length > 512) return error("msgtoolong")
+    /**
+     * Sends what's in the input box. Returns whether it went, i.e. whether the box can be cleared:
+     * text that couldn't be sent (not connected, too long, muted, signed out) stays put.
+     */
+    suspend fun submit(input: String): Boolean = withContext(dispatcher) { handleInput(input) }
+
+    /** Error lines shown while handling input; any means the input didn't go through. */
+    private var inputErrors = 0
+
+    private fun handleInput(input: String): Boolean {
+        val text = input.trim()
+        if (text.isEmpty()) return false
+        sentHistory.remove(text)
+        sentHistory.addFirst(text)
+        while (sentHistory.size > 20) sentHistory.removeLast()
+        val errors = inputErrors
+
+        val cmd = COMMAND.find(text)
+        if (cmd != null && !text.startsWith("/me ", ignoreCase = true)) {
+            val name = cmd.groupValues[1].uppercase(Locale.ROOT)
+            val rest = text.substring(cmd.range.last + 1)
+            runCommand(name, rest.split(' ').filter { it.isNotEmpty() }, rest)
+            return inputErrors == errors
+        }
+        val me = _me.value
+        if (me == null) {
+            // Kept for after signing in, and left in the box too
+            prefs.edit().putString("pre_login_text", text).apply()
+            info(InfoKind.Info, "Want to chat? You need to be signed in. Become part of the community and have your say!")
+            _loginRequests.tryEmit(Unit)
+            return false
+        }
+        val poll = _poll.value
+        val n = text.toIntOrNull()
+        if (poll != null && !poll.ended && n != null && n in 1..poll.options.size) {
+            if (!poll.canVote) {
+                info(InfoKind.Error, "You have already voted!")
+                return true
+            }
+            if (!castVote(n)) return false
+            info(InfoKind.Info, "Your vote has been cast!")
+            return true
+        }
+        return sendMessage(text, me)
+    }
+
+    private fun sendMessage(text: String, me: ChatUser): Boolean {
+        if (text.length > 512) return error("msgtoolong").let { false }
+        val mutedUntil = _muteEndsAt.value
+        if (mutedUntil != null && mutedUntil > now()) {
+            info(InfoKind.Error, "You are temporarily muted! You can chat again ${inDuration(mutedUntil - now())}.")
+            return false
+        }
         val singleEmote = assets.emotes.value.byPrefix[text]?.let { me.canUse(it) } == true
-        if (!sendRaw("MSG", buildJsonObject { put("data", text) })) return
+        if (!sendRaw("MSG", buildJsonObject { put("data", text) })) return false
+        lastSent = text
+        lastSentAt = now()
         if (!singleEmote) {
             val f = formatter.format(text, me)
             append(ChatLine.User(key(), now(), me, text, f.segments, f.action, f.greentext, f.sus, f.linkTag, f.mentions, hash = "", pending = true))
         }
+        return true
     }
+
+    /** The last chat message sent, put back in the box if the server turns it down. */
+    private var lastSent: String? = null
+    private var lastSentAt = 0L
 
     // --- Commands ---
 
@@ -1075,7 +1143,7 @@ class ChatRepository(
                 val nick = args.getOrNull(0)
                 val msg = rest.trim().substringAfter(' ', "").trim()
                 if (nick == null || msg.isEmpty()) return info(InfoKind.Error, "Invalid nick - /msg nick message")
-                sendWhisper(nick, msg)
+                whisper(nick, msg)
             }
             "R", "REPLY" -> {
                 val target = lastWhisperer ?: (_lines.value.lastOrNull { it is ChatLine.User && it.user.key != me?.key } as? ChatLine.User)?.user?.nick
