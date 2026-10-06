@@ -65,8 +65,8 @@ jobs:
           printf '%s' "$KEYSTORE_FILE_BASE64" | base64 -d > "$KEYSTORE_FILE"
           python3 scripts/write-signing-properties.py
 
-      - name: 🤖📦 Test and build
-        run: ./gradlew :app:testDebugUnitTest :app:assembleRelease
+      - name: 🤖📦 Test, lint and build
+        run: ./gradlew :app:testDebugUnitTest :app:lintRelease :app:assembleRelease
 
       - name: 🔏 Check the signature and name the APK
         working-directory: app/build/outputs/apk/release

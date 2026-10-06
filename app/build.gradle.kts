@@ -76,6 +76,16 @@ android {
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     }
 
+    // CI runs :app:lintRelease. Findings that predate it are recorded in lint-baseline.xml
+    // (regenerate with :app:updateLintBaseline); a new error fails the build, warnings don't.
+    lint {
+        baseline = file("lint-baseline.xml")
+        abortOnError = true
+        warningsAsErrors = false
+        // Renovate proposes dependency updates; these checks only repeat that, and change by the day
+        disable += setOf("GradleDependency", "NewerVersionAvailable", "AndroidGradlePluginVersion")
+    }
+
     // Robolectric tests use android.net.Uri and friends from the real framework
     testOptions {
         unitTests.isIncludeAndroidResources = true

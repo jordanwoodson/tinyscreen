@@ -1,0 +1,323 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<issues format="6" by="lint 9.1.1" type="baseline" client="gradle" dependencies="false" name="AGP (9.1.1)" variant="all" version="9.1.1">
+
+    <issue
+        id="InlinedApi"
+        message="Field requires API level 33 (current min is 31): `android.Manifest.permission#POST_NOTIFICATIONS`"
+        errorLine1="        permission.launch(android.Manifest.permission.POST_NOTIFICATIONS)"
+        errorLine2="                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/ui/SettingsScreen.kt"
+            line="59"
+            column="27"/>
+    </issue>
+
+    <issue
+        id="AppLinkWarning"
+        message="This intent filter has the format of an Android App Link but is missing the `autoVerify` attribute; add `android:autoVerify=&quot;true&quot;` to ensure your domain will be validated and enable App Link-related Lint warnings. If you do not want clicked URLs to bring the user to your app, remove the `android.intent.category.BROWSABLE` category, or set `android:autoVerify=&quot;false&quot;` to make it clear this is not intended to be an Android App Link."
+        errorLine1="            &lt;intent-filter>"
+        errorLine2="             ~~~~~~~~~~~~~">
+        <location
+            file="src/main/AndroidManifest.xml"
+            line="37"
+            column="14"/>
+    </issue>
+
+    <issue
+        id="MissingOnRenderProcessGone"
+        message="WebViewClient should implement `onRenderProcessGone` to handle render process crashes or out-of-memory errors. Otherwise, the app will crash when the render process is shut down."
+        errorLine1="                    probe.webViewClient = object : android.webkit.WebViewClient() {"
+        errorLine2="                                          ~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/chat/ui/ChatHost.kt"
+            line="68"
+            column="43"/>
+    </issue>
+
+    <issue
+        id="MissingOnRenderProcessGone"
+        message="WebViewClient should implement `onRenderProcessGone` to handle render process crashes or out-of-memory errors. Otherwise, the app will crash when the render process is shut down."
+        errorLine1="                    probe.webViewClient = object : android.webkit.WebViewClient() {"
+        errorLine2="                                          ~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/chat/ui/ChatHost.kt"
+            line="68"
+            column="43"/>
+    </issue>
+
+    <issue
+        id="MissingOnRenderProcessGone"
+        message="WebViewClient should implement `onRenderProcessGone` to handle render process crashes or out-of-memory errors. Otherwise, the app will crash when the render process is shut down."
+        errorLine1="                    probe.webViewClient = object : android.webkit.WebViewClient() {"
+        errorLine2="                                                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/chat/ui/ChatHost.kt"
+            line="68"
+            column="52"/>
+    </issue>
+
+    <issue
+        id="MissingOnRenderProcessGone"
+        message="WebViewClient should implement `onRenderProcessGone` to handle render process crashes or out-of-memory errors. Otherwise, the app will crash when the render process is shut down."
+        errorLine1="                    probe.webViewClient = object : android.webkit.WebViewClient() {"
+        errorLine2="                                                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/chat/ui/ChatHost.kt"
+            line="68"
+            column="52"/>
+    </issue>
+
+    <issue
+        id="MissingOnRenderProcessGone"
+        message="WebViewClient should implement `onRenderProcessGone` to handle render process crashes or out-of-memory errors. Otherwise, the app will crash when the render process is shut down."
+        errorLine1="    webViewClient = object : WebViewClient() {"
+        errorLine2="                    ~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/web/WebViews.kt"
+            line="53"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="MissingOnRenderProcessGone"
+        message="WebViewClient should implement `onRenderProcessGone` to handle render process crashes or out-of-memory errors. Otherwise, the app will crash when the render process is shut down."
+        errorLine1="    webViewClient = object : WebViewClient() {"
+        errorLine2="                    ~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/web/WebViews.kt"
+            line="53"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="MissingOnRenderProcessGone"
+        message="WebViewClient should implement `onRenderProcessGone` to handle render process crashes or out-of-memory errors. Otherwise, the app will crash when the render process is shut down."
+        errorLine1="    webViewClient = object : WebViewClient() {"
+        errorLine2="                             ~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/web/WebViews.kt"
+            line="53"
+            column="30"/>
+    </issue>
+
+    <issue
+        id="MissingOnRenderProcessGone"
+        message="WebViewClient should implement `onRenderProcessGone` to handle render process crashes or out-of-memory errors. Otherwise, the app will crash when the render process is shut down."
+        errorLine1="    webViewClient = object : WebViewClient() {"
+        errorLine2="                             ~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/web/WebViews.kt"
+            line="53"
+            column="30"/>
+    </issue>
+
+    <issue
+        id="UnsafeOptInUsageError"
+        message="This declaration is opt-in and its usage should be marked with `@androidx.media3.common.util.UnstableApi` or `@OptIn(markerClass = androidx.media3.common.util.UnstableApi.class)`"
+        errorLine1="        pauseAllPlayersAndStopSelf()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/player/PlaybackService.kt"
+            line="39"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UnsafeOptInUsageError"
+        message="This declaration is opt-in and its usage should be marked with `@androidx.media3.common.util.UnstableApi` or `@OptIn(markerClass = androidx.media3.common.util.UnstableApi.class)`"
+        errorLine1="                        val fmt = holder.player.videoFormat"
+        errorLine2="                                                ~~~~~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/player/VideoPlayer.kt"
+            line="566"
+            column="49"/>
+    </issue>
+
+    <issue
+        id="UnsafeOptInUsageError"
+        message="This declaration is opt-in and its usage should be marked with `@androidx.media3.common.util.UnstableApi` or `@OptIn(markerClass = androidx.media3.common.util.UnstableApi.class)`"
+        errorLine1="                            if (fmt.bitrate > 0) append(&quot;  ·  ${&quot;%.1f&quot;.format(fmt.bitrate / 1_000_000f)} Mbps&quot;)"
+        errorLine2="                                    ~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/player/VideoPlayer.kt"
+            line="570"
+            column="37"/>
+    </issue>
+
+    <issue
+        id="UnsafeOptInUsageError"
+        message="This declaration is opt-in and its usage should be marked with `@androidx.media3.common.util.UnstableApi` or `@OptIn(markerClass = androidx.media3.common.util.UnstableApi.class)`"
+        errorLine1="                            if (fmt.bitrate > 0) append(&quot;  ·  ${&quot;%.1f&quot;.format(fmt.bitrate / 1_000_000f)} Mbps&quot;)"
+        errorLine2="                                                                                  ~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/player/VideoPlayer.kt"
+            line="570"
+            column="83"/>
+    </issue>
+
+    <issue
+        id="ContextCastToActivity"
+        message="LocalContext should not be cast to Activity, use LocalActivity instead"
+        errorLine1="    val activity = androidx.compose.ui.platform.LocalContext.current as MainActivity"
+        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/ui/TinyscreenRoot.kt"
+            line="451"
+            column="20"/>
+    </issue>
+
+    <issue
+        id="StateFlowValueCalledInComposition"
+        message="StateFlow.value should not be called within composition"
+        errorLine1="    val me = chat.me.value"
+        errorLine2="                     ~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/chat/ui/ChatSheets.kt"
+            line="234"
+            column="22"/>
+    </issue>
+
+    <issue
+        id="ExportedService"
+        message="Exported service does not require permission"
+        errorLine1="        &lt;service"
+        errorLine2="         ~~~~~~~">
+        <location
+            file="src/main/AndroidManifest.xml"
+            line="53"
+            column="10"/>
+    </issue>
+
+    <issue
+        id="ObsoleteSdkInt"
+        message="Unnecessary; `SDK_INT` is always >= 31"
+        errorLine1="    val base = if (dynamicColor &amp;&amp; Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {"
+        errorLine2="                                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/ui/theme/Theme.kt"
+            line="44"
+            column="36"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="                        prefs.edit().remove(&quot;pre_login_text&quot;).apply()"
+        errorLine2="                        ~~~~~~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/chat/ChatRepository.kt"
+            line="293"
+            column="25"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="                prefs.edit().putString(&quot;pre_login_text&quot;, text).apply()"
+        errorLine2="                ~~~~~~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/chat/ChatRepository.kt"
+            line="860"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putStringSet(&quot;dismissed_pins&quot;, _dismissedPins.value).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/chat/ChatRepository.kt"
+            line="1134"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="        prefs.edit().putStringSet(&quot;dismissed_pins&quot;, _dismissedPins.value).apply()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/chat/ChatRepository.kt"
+            line="1139"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `String.toUri` instead?"
+        errorLine1="        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null"
+        errorLine2="                                ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/stream/LinkParser.kt"
+            line="17"
+            column="33"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="            prefs.edit().clear().putString(&quot;cacheVersion&quot;, CACHE_VERSION).apply()"
+        errorLine2="            ~~~~~~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/stream/LiveRepository.kt"
+            line="67"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `SharedPreferences.edit` instead?"
+        errorLine1="            prefs.edit().putString(type, data.toString()).apply()"
+        errorLine2="            ~~~~~~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/stream/LiveRepository.kt"
+            line="155"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `String.toUri` instead?"
+        errorLine1="                val uri = Uri.parse(url)"
+        errorLine2="                          ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/auth/LoginScreen.kt"
+            line="55"
+            column="27"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `String.toUri` instead?"
+        errorLine1="            val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return url"
+        errorLine2="                                    ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/chat/MessageFormatter.kt"
+            line="145"
+            column="37"/>
+    </issue>
+
+    <issue
+        id="UseKtx"
+        message="Use the KTX extension function `String.toUri` instead?"
+        errorLine1="            val uri = runCatching { Uri.parse(url) }.getOrNull()"
+        errorLine2="                                    ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/chat/MessageFormatter.kt"
+            line="155"
+            column="37"/>
+    </issue>
+
+    <issue
+        id="ConstantLocale"
+        message="Assigning `Locale.getDefault()` to a final static field is suspicious; this code will not work correctly if the user changes locale while the app is running"
+        errorLine1="private val timeFormat = SimpleDateFormat(&quot;HH:mm&quot;, Locale.getDefault())"
+        errorLine2="                                                   ~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/io/github/jordanwoodson/tinyscreen/chat/ui/ChatLineView.kt"
+            line="122"
+            column="52"/>
+    </issue>
+
+</issues>
