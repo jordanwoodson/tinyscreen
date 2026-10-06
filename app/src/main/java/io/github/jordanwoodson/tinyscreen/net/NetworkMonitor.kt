@@ -9,8 +9,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * Whether the default network is metered (mobile data, hotspots), which picks between the Wi-Fi and
- * mobile quality settings. VPNs such as Tailscale report the metering of the network underneath.
+ * The default network: whether there is one, and whether it's metered (mobile data, hotspots),
+ * which picks between the Wi-Fi and mobile quality settings. VPNs such as Tailscale report the
+ * metering of the network underneath.
  */
 class NetworkMonitor(context: Context) {
     private val connectivity = context.getSystemService(ConnectivityManager::class.java)
@@ -18,8 +19,20 @@ class NetworkMonitor(context: Context) {
     private val _metered = MutableStateFlow(connectivity.isActiveNetworkMetered)
     val metered: StateFlow<Boolean> = _metered.asStateFlow()
 
+    /** True while there is a default network. Collect the false → true edges to retry after a dead zone. */
+    private val _online = MutableStateFlow(connectivity.activeNetwork != null)
+    val online: StateFlow<Boolean> = _online.asStateFlow()
+
     init {
         connectivity.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                _online.value = true
+            }
+
+            override fun onLost(network: Network) {
+                _online.value = connectivity.activeNetwork != null
+            }
+
             override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
                 _metered.value = !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) &&
                     !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_TEMPORARILY_NOT_METERED)
