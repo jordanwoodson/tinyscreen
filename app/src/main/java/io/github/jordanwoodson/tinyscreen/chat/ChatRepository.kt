@@ -416,9 +416,10 @@ class ChatRepository(
             }
             "DEATH" -> o?.let {
                 val user = parseUser(it)
-                censor(user.key)
-                append(ChatLine.Death(key(), it["timestamp"].long() ?: now(), user, it["data"].str().orEmpty()))
-                if (user.key == _me.value?.key) startMute(it["timestamp"].long() ?: now(), it["duration"].long() ?: 0)
+                val ts = it["timestamp"].long() ?: now()
+                censor(user.key, ts)
+                append(ChatLine.Death(key(), ts, user, it["data"].str().orEmpty()))
+                if (user.key == _me.value?.key) startMute(ts, it["duration"].long() ?: 0)
             }
             "SUBSCRIPTION", "GIFTSUB", "MASSGIFT", "DONATION", "XPOST", "SPOTLIGHT" -> o?.let {
                 if (event == "SPOTLIGHT") it["key"].str()?.let { k -> _spotlights.value = _spotlights.value + k }
@@ -566,7 +567,7 @@ class ChatRepository(
         val ts = o["timestamp"].long() ?: now()
         when (kind) {
             "muted" -> {
-                censor(target.lowercase())
+                censor(target.lowercase(), ts)
                 if (isMe) {
                     info(InfoKind.Command, "You have been muted by $moderator.")
                     startMute(ts, o["duration"].long() ?: 0)
@@ -581,7 +582,7 @@ class ChatRepository(
                 info(InfoKind.Command, "$target unmuted by $moderator.")
             }
             "banned" -> {
-                censor(target.lowercase())
+                censor(target.lowercase(), ts)
                 if (isMe) {
                     info(InfoKind.Command, "You have been banned by $moderator. Check your profile for more information.")
                     if (!history) runCommand("BANINFO", emptyList(), "")
@@ -603,8 +604,9 @@ class ChatRepository(
         if (end > now()) _muteEndsAt.value = end
     }
 
-    private fun censor(nickKey: String) {
-        _censors.value = _censors.value.censor(nickKey)
+    /** Hides what [nickKey] said up to [at] (server time), like the site does for lines on screen. */
+    private fun censor(nickKey: String, at: Long) {
+        _censors.value = _censors.value.censor(nickKey, at)
     }
 
     fun reveal(nickKey: String) {

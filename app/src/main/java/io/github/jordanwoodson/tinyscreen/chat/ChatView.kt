@@ -99,16 +99,26 @@ data class HighlightRules(
     }
 }
 
-/** Muted and banned nicks, and the ones tapped to reveal. */
+/**
+ * Mutes and bans hide what someone had already said, as on the site: each nick keeps the time of
+ * its latest censor and only lines up to then are hidden. Revealing shows everything up to that
+ * censor, while a later mute hides the newer lines again.
+ */
 data class Censors(
-    val nicks: Set<String> = emptySet(),
-    val revealed: Set<String> = emptySet(),
+    val until: Map<String, Long> = emptyMap(),
+    val revealedUntil: Map<String, Long> = emptyMap(),
 ) {
-    fun censor(nickKey: String): Censors = copy(nicks = nicks + nickKey)
+    fun censor(nickKey: String, at: Long): Censors =
+        copy(until = until + (nickKey to maxOf(at, until[nickKey] ?: Long.MIN_VALUE)))
 
-    fun reveal(nickKey: String): Censors = copy(revealed = revealed + nickKey)
+    fun reveal(nickKey: String): Censors =
+        until[nickKey]?.let { copy(revealedUntil = revealedUntil + (nickKey to it)) } ?: this
 
-    fun isCensored(line: ChatLine.User): Boolean = line.user.key in nicks && line.user.key !in revealed
+    fun isCensored(line: ChatLine.User): Boolean {
+        if (line.whisper || line.historical) return false
+        val end = until[line.user.key] ?: return false
+        return line.timestamp <= end && line.timestamp > (revealedUntil[line.user.key] ?: Long.MIN_VALUE)
+    }
 }
 
 /**
