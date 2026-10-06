@@ -511,6 +511,7 @@ private fun PlayerSettingsSheet(holder: PlayerHolder, state: PlayerUiState, onDi
     val audioOnly by holder.audioOnly.collectAsState()
     val active by holder.activeQuality.collectAsState()
     val sleepAt by holder.sleepTimerEndsAt.collectAsState()
+    val sleepMinutes by holder.sleepTimerMinutes.collectAsState()
     // The video size changes whenever the rendition does
     val playing = remember(state.videoSize) { holder.playingQualityLabel() }
     var page by remember { mutableStateOf("main") }
@@ -539,7 +540,7 @@ private fun PlayerSettingsSheet(holder: PlayerHolder, state: PlayerUiState, onDi
             }
             "sleep" -> LazyColumn {
                 items(listOf(0, 15, 30, 45, 60, 90, 120)) { m ->
-                    SheetOption(if (m == 0) "Off" else "$m minutes", selected = (m == 0 && sleepAt == null)) {
+                    SheetOption(if (m == 0) "Off" else "$m minutes", selected = m == sleepMinutes) {
                         holder.setSleepTimer(m); onDismiss()
                     }
                 }

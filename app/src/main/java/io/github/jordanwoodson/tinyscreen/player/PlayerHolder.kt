@@ -535,20 +535,32 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope, private 
 
     private val _sleepTimerEndsAt = MutableStateFlow<Long?>(null)
     val sleepTimerEndsAt: StateFlow<Long?> = _sleepTimerEndsAt.asStateFlow()
+
+    /** The running timer's length, 0 when off. */
+    private val _sleepTimerMinutes = MutableStateFlow(0)
+    val sleepTimerMinutes: StateFlow<Int> = _sleepTimerMinutes.asStateFlow()
     private var sleepJob: Job? = null
 
     fun setSleepTimer(minutes: Int) {
         sleepJob?.cancel()
         if (minutes <= 0) {
             _sleepTimerEndsAt.value = null
+            _sleepTimerMinutes.value = 0
             return
         }
         val endsAt = System.currentTimeMillis() + minutes * 60_000L
         _sleepTimerEndsAt.value = endsAt
+        _sleepTimerMinutes.value = minutes
         sleepJob = scope.launch {
             delay(minutes * 60_000L)
+            // Stop rather than pause: a paused live stream keeps reloading its playlist all night,
+            // and the media notification goes away. Play (resume()) picks up at the live edge.
+            retryJob?.cancel()
+            upgradeJob?.cancel()
             player.pause()
+            player.stop()
             _sleepTimerEndsAt.value = null
+            _sleepTimerMinutes.value = 0
         }
     }
 

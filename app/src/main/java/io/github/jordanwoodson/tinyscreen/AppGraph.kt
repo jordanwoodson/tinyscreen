@@ -51,11 +51,11 @@ class AppGraph(val app: Application) {
     @Volatile var inForeground = false
         private set
 
+    private var idleJob: Job? = null
+    private var pausedSockets = false
+
     init {
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
-            private var idleJob: Job? = null
-            private var pausedSockets = false
-
             override fun onStart(owner: LifecycleOwner) {
                 inForeground = true
                 idleJob?.cancel()
@@ -68,18 +68,13 @@ class AppGraph(val app: Application) {
 
             override fun onStop(owner: LifecycleOwner) {
                 inForeground = false
-                // Keep sockets while something is playing (PiP / background audio); otherwise
-                // drop them after a couple of minutes to save battery.
-                idleJob = scope.launch {
-                    delay(120_000)
-                    if (!player.player.isPlaying) {
-                        pausedSockets = true
-                        chat.stop()
-                        live.stop()
-                    }
-                }
+                armIdleCheck()
             }
         })
+        // Playback that stops in the background (paused, sleep timer) starts the countdown again
+        scope.launch {
+            player.isPlaying.collect { playing -> if (!playing && !inForeground && !pausedSockets) armIdleCheck() }
+        }
         // Streams start at the Wi-Fi or mobile quality; with "Remember my choice", a pick from the
         // player menu becomes the new default for the network it was made on.
         scope.launch {
@@ -102,6 +97,22 @@ class AppGraph(val app: Application) {
             network.online.collect { online ->
                 if (online && !wasOnline) chat.onNetworkRestored()
                 wasOnline = online
+            }
+        }
+    }
+
+    /**
+     * Keep sockets while something is playing (PiP / background audio); otherwise drop them after a
+     * couple of minutes to save battery.
+     */
+    private fun armIdleCheck() {
+        idleJob?.cancel()
+        idleJob = scope.launch {
+            delay(120_000)
+            if (!inForeground && !player.player.isPlaying) {
+                pausedSockets = true
+                chat.stop()
+                live.stop()
             }
         }
     }
