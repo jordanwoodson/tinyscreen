@@ -112,7 +112,8 @@ fun VideoPlayer(
     isFullscreen: Boolean,
     inPip: Boolean,
     adBreak: Boolean,
-    onToggleFullscreen: () -> Unit,
+    /** Null where the phone can't be turned (split-screen, large screens), which hides the button. */
+    onToggleFullscreen: (() -> Unit)?,
     onEnterPip: () -> Unit,
     modifier: Modifier = Modifier,
     chatVisible: Boolean? = null,
@@ -313,7 +314,7 @@ fun VideoPlayer(
                     isFullscreen = isFullscreen,
                     chatVisible = chatVisible,
                     onToggleChat = onToggleChat,
-                    onToggleFullscreen = { poke(); onToggleFullscreen() },
+                    onToggleFullscreen = onToggleFullscreen?.let { toggle -> { poke(); toggle() } },
                     onEnterPip = onEnterPip,
                     onSettings = { showSettings = true },
                     onZoom = { zoomed = !zoomed; poke() },
@@ -339,7 +340,7 @@ private fun Controls(
     isFullscreen: Boolean,
     chatVisible: Boolean?,
     onToggleChat: (() -> Unit)?,
-    onToggleFullscreen: () -> Unit,
+    onToggleFullscreen: (() -> Unit)?,
     onEnterPip: () -> Unit,
     onSettings: () -> Unit,
     onZoom: () -> Unit,
@@ -455,8 +456,10 @@ private fun Controls(
                 IconButton(onClick = onZoom) {
                     Icon(Icons.Filled.AspectRatio, if (zoomed) "Fit" else "Zoom", tint = if (zoomed) MaterialTheme.colorScheme.primary else Color.White)
                 }
-                IconButton(onClick = onToggleFullscreen) {
-                    Icon(if (isFullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen, "Fullscreen", tint = Color.White)
+                if (onToggleFullscreen != null) {
+                    IconButton(onClick = onToggleFullscreen) {
+                        Icon(if (isFullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen, "Fullscreen", tint = Color.White)
+                    }
                 }
             }
         }

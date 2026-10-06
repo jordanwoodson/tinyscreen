@@ -47,6 +47,8 @@ import kotlinx.coroutines.launch
 interface HostActions {
     fun enterPip()
     fun setFullscreen(fullscreen: Boolean)
+    /** Whether [setFullscreen] can turn the phone: not in split-screen, PiP or on large screens. Compose-observable. */
+    val canRotate: Boolean
     fun setVideoBounds(bounds: Rect?)
     fun openExternal(url: String)
 }
@@ -64,6 +66,8 @@ class MainActivity : ComponentActivity(), HostActions {
      * split-screen, freeform windows or on large screens, where Android ignores orientation requests.
      */
     val isFullscreen = mutableStateOf(false)
+    private val canRotateState = mutableStateOf(true)
+    override val canRotate: Boolean get() = canRotateState.value
 
     /** Links handed to the app (deep links, shares) waiting to be opened by the UI. */
     val incomingLinks = MutableSharedFlow<String>(replay = 1, extraBufferCapacity = 4)
@@ -84,6 +88,7 @@ class MainActivity : ComponentActivity(), HostActions {
         override fun onEvents(player: Player, events: Player.Events) {
             if (events.containsAny(
                     Player.EVENT_IS_PLAYING_CHANGED,
+                    Player.EVENT_PLAY_WHEN_READY_CHANGED,
                     Player.EVENT_VIDEO_SIZE_CHANGED,
                     Player.EVENT_PLAYBACK_STATE_CHANGED,
                 )
@@ -215,7 +220,8 @@ class MainActivity : ComponentActivity(), HostActions {
 
     private fun updateWindowState(config: Configuration) {
         isLandscape.value = config.orientation == Configuration.ORIENTATION_LANDSCAPE
-        isFullscreen.value = isLandscape.value && canRotate(config)
+        canRotateState.value = canRotate(config)
+        isFullscreen.value = isLandscape.value && canRotateState.value
         applySystemBars()
     }
 
@@ -329,7 +335,7 @@ class MainActivity : ComponentActivity(), HostActions {
         val settings = graph.settings.settings.value
         return PictureInPictureParams.Builder()
             .setAspectRatio(ratio)
-            .setAutoEnterEnabled(settings.autoPip && (player.isPlaying || webEmbed.playing.value))
+            .setAutoEnterEnabled(settings.autoPip && (player.wantsToPlay() || webEmbed.playing.value))
             .setSeamlessResizeEnabled(false)
             .apply { videoBounds?.let { setSourceRectHint(it) } }
             .build()
@@ -338,4 +344,8 @@ class MainActivity : ComponentActivity(), HostActions {
     private fun updatePipParams() {
         runCatching { setPictureInPictureParams(buildPipParams()) }
     }
+
+    /** Playing or about to: pressing Home mid-rebuffer should still go to picture-in-picture. */
+    private fun Player.wantsToPlay(): Boolean =
+        playWhenReady && (playbackState == Player.STATE_READY || playbackState == Player.STATE_BUFFERING)
 }

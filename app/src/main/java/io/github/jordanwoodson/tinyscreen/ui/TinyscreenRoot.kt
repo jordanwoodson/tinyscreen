@@ -245,6 +245,13 @@ private fun MainScreen(
     LaunchedEffect(playback) {
         (playback as? Playback.Web)?.note?.let { snackbar.showSnackbar(it) }
     }
+    val message by vm.message.collectAsState()
+    LaunchedEffect(message) {
+        message?.let {
+            snackbar.showSnackbar(it)
+            vm.consumeMessage()
+        }
+    }
     // The web player lives outside composition (see WebEmbedHolder): load what should play, blank it otherwise
     val webUrl = (playback as? Playback.Web)?.url
     LaunchedEffect(webUrl) { webEmbed.show(webUrl) }
@@ -468,7 +475,8 @@ private fun StreamArea(
                     isFullscreen = isFullscreen,
                     inPip = inPip,
                     adBreak = adBreak,
-                    onToggleFullscreen = { host.setFullscreen(!isFullscreen) },
+                    // Android ignores orientation requests in split-screen and on large screens
+                    onToggleFullscreen = if (host.canRotate) { { host.setFullscreen(!isFullscreen) } } else null,
                     onEnterPip = host::enterPip,
                     chatVisible = chatVisible,
                     onToggleChat = onToggleChat,
@@ -529,7 +537,8 @@ private fun MiniPlayerBar(vm: BigscreenViewModel, webEmbed: WebEmbedHolder, onEx
             when {
                 web -> webEmbed.togglePlayback()
                 playing -> vm.player.player.pause()
-                else -> vm.player.player.play()
+                // resume() also picks up again after the sleep timer stopped the player
+                else -> vm.player.resume()
             }
         }) {
             Icon(if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, if (playing) "Pause" else "Play")
