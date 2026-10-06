@@ -53,6 +53,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import io.github.jordanwoodson.tinyscreen.BuildConfig
+import io.github.jordanwoodson.tinyscreen.chat.platform.PlatformChatChoices
 import io.github.jordanwoodson.tinyscreen.settings.AppSettings
 import io.github.jordanwoodson.tinyscreen.settings.PlatformPreference
 import io.github.jordanwoodson.tinyscreen.settings.Quality
@@ -153,6 +154,15 @@ fun SettingsScreen(
 
             item { Header("Chat") }
             item { Toggle("Use web chat", "Load destiny.gg's own chat page instead of the native chat", settings.webChat) { v -> onChange { it.copy(webChat = v) } } }
+            item {
+                Toggle("Platform chat tabs", "Swipe or tap between destiny.gg chat and Destiny's chat on Kick, YouTube and other platforms", settings.platformChatTabs) { v ->
+                    onChange { it.copy(platformChatTabs = v) }
+                }
+            }
+            if (settings.platformChatTabs) {
+                item { PlatformChatChoices(settings.hiddenChatPlatforms) { hidden -> onChange { it.copy(hiddenChatPlatforms = hidden) } } }
+                item { Toggle("Chat of other streams", "A tab for the chat of whoever bigscreen is showing", settings.otherStreamChatTab) { v -> onChange { it.copy(otherStreamChatTab = v) } } }
+            }
             item { Toggle("Timestamps", null, settings.showTimestamps) { v -> onChange { it.copy(showTimestamps = v) } } }
             item { Toggle("Hide flairs", null, settings.hideFlairs) { v -> onChange { it.copy(hideFlairs = v) } } }
             item { Toggle("Animated emotes", null, settings.animateEmotes) { v -> onChange { it.copy(animateEmotes = v) } } }
