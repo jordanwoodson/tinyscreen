@@ -30,6 +30,7 @@ class EmbedTest {
     fun parsesFacebookAndRumblePub() {
         assertEquals(Embed("facebook", "somepage/videos/1234567890123"), Embed.fromHash("#facebook/somepage/videos/1234567890123"))
         assertEquals(Embed("rumble", "v5qi58n/?pub=4abcd"), Embed.fromHash("#rumble/v5qi58n/?pub=4abcd"))
+        assertEquals(Embed("rumble", "v1abcdefg/?pub=4abcd"), Embed.fromHash("#rumble/v1abcdefg/?pub=4abcd"))
     }
 
     @Test

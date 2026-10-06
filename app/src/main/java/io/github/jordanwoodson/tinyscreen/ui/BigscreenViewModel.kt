@@ -13,6 +13,7 @@ import io.github.jordanwoodson.tinyscreen.stream.Hosting
 import io.github.jordanwoodson.tinyscreen.stream.LinkParser
 import io.github.jordanwoodson.tinyscreen.stream.StreamEntry
 import io.github.jordanwoodson.tinyscreen.stream.TopEmbed
+import io.github.jordanwoodson.tinyscreen.stream.resolvers.RumbleResolver
 import io.github.jordanwoodson.tinyscreen.stream.resolvers.StreamOfflineException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -194,8 +195,21 @@ class BigscreenViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Opens a link from chat, a share intent or a deep link if it names something playable. */
     fun openLink(link: String): Boolean {
-        val embed = LinkParser.parse(link) ?: return false
-        setEmbed(embed)
+        LinkParser.parse(link)?.let {
+            setEmbed(it)
+            return true
+        }
+        val (page, start) = LinkParser.rumblePage(link) ?: return false
+        viewModelScope.launch {
+            try {
+                setEmbed(Embed("rumble", RumbleResolver.embedIdForPage(page), start))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "no embed for $page", e)
+                _message.value = "Couldn't open that Rumble video"
+            }
+        }
         return true
     }
 

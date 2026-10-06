@@ -23,7 +23,8 @@ data class Embed(val platform: String, val id: String, val startSeconds: Int? = 
         val e = Uri.encode(id)
         return when (platform) {
             "twitch" -> "https://player.twitch.tv/?channel=$e$parents"
-            "twitch-vod" -> "https://player.twitch.tv/?video=$e$parents"
+            "twitch-vod" -> "https://player.twitch.tv/?video=$e$parents" +
+                (startSeconds?.let { "&time=${it / 3600}h${it % 3600 / 60}m${it % 60}s" } ?: "")
             "twitch-clip" -> "https://clips.twitch.tv/embed?clip=$e$parents"
             "youtube" -> "https://www.youtube.com/embed/$e?autoplay=1&playsinline=1&start=${startSeconds ?: ""}"
             "kick" -> "https://player.kick.com/$e?autoplay=true"
@@ -40,7 +41,7 @@ data class Embed(val platform: String, val id: String, val startSeconds: Int? = 
         // Same pattern as the bigscreen page, plus youtube-live which chat also links
         private val HASH = Regex(
             """^#(kick|kick-vod|twitch|twitch-vod|twitch-clip|youtube|youtube-live|facebook|rumble|vimeo|angelthump)/""" +
-                """([\w\d]{3,64}/videos/\d{10,20}|[\w-]{3,64}/[\da-f-]{36}|[\w-]{3,64}|\w{7}/\?pub=\w{5})""" +
+                """([\w\d]{3,64}/videos/\d{10,20}|[\w-]{3,64}/[\da-f-]{36}|[\w-]{3,64}|\w{7,12}/\?pub=\w{3,10})""" +
                 """(?:\?t=(\d+)s?)?(?:$|\?|&)""",
         )
 

@@ -87,7 +87,7 @@ class YouTubeResolver : StreamResolver {
             subtitle = (details["author"].string ?: "YouTube") + " · YouTube",
             artworkUrl = "https://i.ytimg.com/vi/${embed.id}/hqdefault.jpg",
             audioUrl = files?.second,
-            startPositionMs = embed.startSeconds?.let { it * 1000L } ?: C.TIME_UNSET,
+            startPositionMs = embed.startSeconds?.takeUnless { isLive }?.let { it * 1000L } ?: C.TIME_UNSET,
             liveTargetOffsetMs = 10_000,
             refresh = { visitorData = null; resolve(embed) },
         )
