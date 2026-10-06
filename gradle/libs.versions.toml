@@ -1,4 +1,5 @@
 [versions]
+agp = "9.1.1"
 kotlin = "2.3.21"
 activityCompose = "1.13.0"
 composeBom = "2026.05.01"
@@ -17,6 +18,7 @@ robolectric = "4.17"
 androidxTestCore = "1.7.0"
 
 [plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
 compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 
