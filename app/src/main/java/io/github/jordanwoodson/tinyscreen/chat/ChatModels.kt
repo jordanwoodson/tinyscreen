@@ -229,3 +229,13 @@ data class WhisperMessage(
     val text: String,
     val timestamp: Long,
 )
+
+/** Something worth a notification while the app is in the background. */
+sealed interface ChatAlert {
+    val from: String
+    val text: String
+    val timestamp: Long
+
+    data class Whisper(override val from: String, override val text: String, override val timestamp: Long) : ChatAlert
+    data class Mention(override val from: String, override val text: String, override val timestamp: Long) : ChatAlert
+}

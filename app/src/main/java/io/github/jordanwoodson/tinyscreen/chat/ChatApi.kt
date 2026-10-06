@@ -50,9 +50,10 @@ object ChatApi {
         )
     }.getOrNull()
 
-    suspend fun unreadCount(): Int = runCatching {
+    /** Null when it couldn't be fetched, so callers keep what they had rather than showing 0. */
+    suspend fun unreadCount(): Int? = runCatching {
         get("/api/messages/unread-count").obj()?.get("data").obj()?.get("count").long()?.toInt() ?: 0
-    }.getOrDefault(0)
+    }.getOrNull()
 
     suspend fun conversations(search: String? = null): List<Conversation> {
         val q = search?.takeIf { it.isNotBlank() }?.let { "?search=" + Uri.encode(it) } ?: ""

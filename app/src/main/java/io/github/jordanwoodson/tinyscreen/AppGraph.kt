@@ -5,7 +5,7 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import io.github.jordanwoodson.tinyscreen.chat.ChatAssets
-import io.github.jordanwoodson.tinyscreen.chat.ChatNotifier
+import io.github.jordanwoodson.tinyscreen.chat.ChatNotifications
 import io.github.jordanwoodson.tinyscreen.chat.ChatRepository
 import io.github.jordanwoodson.tinyscreen.net.NetworkMonitor
 import io.github.jordanwoodson.tinyscreen.player.PlayerHolder
@@ -35,7 +35,7 @@ class AppGraph(val app: Application) {
     val network by lazy { NetworkMonitor(app) }
     val chatAssets by lazy { ChatAssets(app) }
     val chat by lazy { ChatRepository(app, scope, settings, chatAssets) }
-    private val notifier by lazy { ChatNotifier(app) }
+    val chatNotifications by lazy { ChatNotifications(app, scope, settings, chat) }
     val resolvers by lazy {
         StreamResolvers(
             listOf(
@@ -94,8 +94,7 @@ class AppGraph(val app: Application) {
                 settings.update { if (metered) it.copy(qualityMobile = pick) else it.copy(qualityWifi = pick) }
             }
         }
-        scope.launch {
-            chat.alerts.collect { (title, text) -> if (!inForeground) notifier.show(title, text) }
-        }
+        // Whisper and mention notifications, from the socket or a background check once it idles
+        chatNotifications.start()
     }
 }

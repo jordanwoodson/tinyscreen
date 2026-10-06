@@ -62,6 +62,12 @@
             </intent-filter>
         </activity>
 
+        <!-- Checks for whispers and mentions while the app is in the background -->
+        <service
+            android:name=".chat.ChatPollJob"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
         <service
             android:name=".player.PlaybackService"
             android:exported="true"

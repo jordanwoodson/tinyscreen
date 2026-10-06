@@ -66,7 +66,7 @@ class ChatRepository(
 ) {
     private val dispatcher = Dispatchers.Default.limitedParallelism(1)
     private val scope = CoroutineScope(appScope.coroutineContext + dispatcher)
-    private val prefs = context.getSharedPreferences("chat", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val json = Http.json
     private val settings: AppSettings get() = settingsRepo.settings.value
 
@@ -141,9 +141,9 @@ class ChatRepository(
     private val _loginRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val loginRequests: SharedFlow<Unit> = _loginRequests.asSharedFlow()
 
-    /** Incoming whispers/highlights for notifications: (title, text). */
-    private val _alerts = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 8)
-    val alerts: SharedFlow<Pair<String, String>> = _alerts.asSharedFlow()
+    /** Incoming whispers and highlights, for notifications. */
+    private val _alerts = MutableSharedFlow<ChatAlert>(extraBufferCapacity = 16)
+    val alerts: SharedFlow<ChatAlert> = _alerts.asSharedFlow()
 
     val sentHistory = ArrayDeque<String>()
     private val highlighters = ArrayDeque<String>()
@@ -330,6 +330,8 @@ class ChatRepository(
                 val user = o?.let { parseUser(it) }
                 _me.value = user
                 if (user != null) {
+                    // Background whisper and mention checks run without a socket, so remember who we are
+                    prefs.edit().putString(PREF_NICK, user.nick).apply()
                     upsert(user)
                     appScope.launch { refreshWhispers() }
                     prefs.getString("pre_login_text", null)?.let {
@@ -524,7 +526,7 @@ class ChatRepository(
         }
         // The same rules as the blue highlight in the list, so ignored users and links don't notify
         if (!history && settings.notifyHighlights && !filter.hidesText(line) && filter.highlights.matches(line)) {
-            _alerts.tryEmit("${user.nick} said ..." to text)
+            _alerts.tryEmit(ChatAlert.Mention(user.nick, text, ts))
         }
     }
 
@@ -556,7 +558,7 @@ class ChatRepository(
             id?.let { appScope.launch { runCatching { ChatApi.markRead(it) } } }
         } else {
             _unreadWhispers.value = _unreadWhispers.value + 1
-            if (!history && settings.notifyWhispers) _alerts.tryEmit("$from whispered ..." to text)
+            if (!history && settings.notifyWhispers) _alerts.tryEmit(ChatAlert.Whisper(from, text, ts))
         }
         // Bump the conversation to the top
         val existing = _conversations.value.firstOrNull { it.username.equals(from, ignoreCase = true) }
@@ -882,7 +884,7 @@ class ChatRepository(
 
     suspend fun refreshWhispers() {
         if (_me.value == null) return
-        _unreadWhispers.value = ChatApi.unreadCount()
+        ChatApi.unreadCount()?.let { _unreadWhispers.value = it }
         runCatching { ChatApi.conversations() }.onSuccess { _conversations.value = it }
     }
 
@@ -1226,6 +1228,8 @@ class ChatRepository(
     companion object {
         private const val TAG = "Chat"
         const val WS_URL = "wss://chat.destiny.gg/ws"
+        const val PREFS = "chat"
+        const val PREF_NICK = "last_nick"
         private val SLASH_WORD = Regex("^/\\w+ ")
         private val COMMAND = Regex("^/([a-z0-9]+)\\s?", RegexOption.IGNORE_CASE)
         private val NICK = Regex("^\\w{3,20}$")

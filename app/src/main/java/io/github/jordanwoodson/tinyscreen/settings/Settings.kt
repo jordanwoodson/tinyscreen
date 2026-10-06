@@ -18,6 +18,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -200,6 +201,9 @@ class SettingsRepository(private val store: DataStore<Preferences>, scope: Corou
             chatLines = this[Keys.chatLines] ?: d.chatLines,
         )
     }
+
+    /** The stored settings, read from disk: for background work that can't wait for [settings] to load. */
+    suspend fun current(): AppSettings = store.data.first().toSettings()
 
     suspend fun update(block: (AppSettings) -> AppSettings) {
         try {
