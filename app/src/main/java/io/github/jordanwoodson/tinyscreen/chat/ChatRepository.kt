@@ -515,16 +515,32 @@ class ChatRepository(
         )
         append(line)
 
-        if (me != null && user.key != me.key && mentionsMe(text, me)) {
+        val filter = currentFilter()
+        if (me != null && user.key != me.key && filter.highlights.mentionsMe(line)) {
             highlighters.remove(user.nick)
             highlighters.addFirst(user.nick)
             while (highlighters.size > 10) highlighters.removeLast()
-            if (!history && settings.notifyHighlights) _alerts.tryEmit("${user.nick} said ..." to text)
+        }
+        // The same rules as the blue highlight in the list, so ignored users and links don't notify
+        if (!history && settings.notifyHighlights && !filter.hidesText(line) && filter.highlights.matches(line)) {
+            _alerts.tryEmit("${user.nick} said ..." to text)
         }
     }
 
-    private fun mentionsMe(text: String, me: ChatUser): Boolean =
-        Regex("\\b${Regex.escape(me.nick)}\\b", RegexOption.IGNORE_CASE).containsMatchIn(text)
+    private var filterSource: Pair<AppSettings, ChatUser?>? = null
+    private var filter = ChatFilter()
+
+    /** The list's filter for the current settings, rebuilt only when they change. */
+    private fun currentFilter(): ChatFilter {
+        val s = settings
+        val me = _me.value
+        val source = filterSource
+        if (source == null || source.first !== s || source.second !== me) {
+            filter = ChatFilter.from(s, me)
+            filterSource = s to me
+        }
+        return filter
+    }
 
     private fun onWhisper(o: JsonObject, history: Boolean) {
         val from = o["nick"].str() ?: return
