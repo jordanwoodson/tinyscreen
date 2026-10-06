@@ -61,18 +61,7 @@ jobs:
 
       - name: 📌 Assign the next version
         id: version
-        run: |
-          n=$(git tag --list 'v1.*' | sed 's/^v1\.0\.//' | sort -n | tail -1)
-          n=${n:-0}
-          last_tag=$(git tag --list "v1.0.$n")
-          n=$((n + 1))
-          version="1.0.$n"
-          sed -i "s/^version_name=.*/version_name=$version/; s/^version_code=.*/version_code=$n/" app/gradle.properties
-          echo "LAST_TAG=$last_tag" >> "$GITHUB_ENV"
-          echo "VERSION=$version" >> "$GITHUB_ENV"
-          echo "VERSION_CODE=$n" >> "$GITHUB_ENV"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Releasing $version (version code $n) after ${last_tag:-nothing}"
+        run: scripts/next-version.sh --write # 1.0.N; see the script for the version code scheme
 
       - name: 🧪 Test and lint
         run: ./gradlew :app:testDebugUnitTest :app:lintRelease
