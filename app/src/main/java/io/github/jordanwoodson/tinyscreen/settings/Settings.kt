@@ -1,11 +1,14 @@
 package io.github.jordanwoodson.tinyscreen.settings
 
 import android.content.Context
+import android.util.Log
 import androidx.datastore.core.DataStore
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
@@ -13,11 +16,19 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.io.IOException
 
-private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
+/** A damaged settings file starts over from the defaults instead of crashing every launch. */
+internal val settingsCorruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() }
+
+private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
+    name = "settings",
+    corruptionHandler = settingsCorruptionHandler,
+)
 
 enum class PlatformPreference(val label: String) {
     Auto("Automatic"),
@@ -88,7 +99,9 @@ data class AppSettings(
     val notifyHighlights: Boolean = false,
 )
 
-class SettingsRepository(private val context: Context, scope: CoroutineScope) {
+class SettingsRepository(private val store: DataStore<Preferences>, scope: CoroutineScope) {
+    constructor(context: Context, scope: CoroutineScope) : this(context.dataStore, scope)
+
     private object Keys {
         val dynamicColor = booleanPreferencesKey("dynamic_color")
         val pureBlack = booleanPreferencesKey("pure_black")
@@ -129,7 +142,9 @@ class SettingsRepository(private val context: Context, scope: CoroutineScope) {
         val notifyHighlights = booleanPreferencesKey("notify_highlights")
     }
 
-    val settings: StateFlow<AppSettings> = context.dataStore.data
+    val settings: StateFlow<AppSettings> = store.data
+        // A file that can't be read at all (rather than a damaged one) shows the defaults
+        .catch { e -> if (e is IOException) emit(emptyPreferences()) else throw e }
         .map { it.toSettings() }
         .stateIn(scope, SharingStarted.Eagerly, AppSettings())
 
@@ -177,9 +192,14 @@ class SettingsRepository(private val context: Context, scope: CoroutineScope) {
     }
 
     suspend fun update(block: (AppSettings) -> AppSettings) {
-        context.dataStore.edit { prefs ->
-            val next = block(prefs.toSettings())
-            prefs.write(next)
+        try {
+            store.edit { prefs ->
+                val next = block(prefs.toSettings())
+                prefs.write(next)
+            }
+        } catch (e: IOException) {
+            // Losing one change beats crashing the app's scope
+            Log.w("Settings", "couldn't save settings", e)
         }
     }
 
