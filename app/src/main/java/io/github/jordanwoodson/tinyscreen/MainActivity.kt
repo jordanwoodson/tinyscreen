@@ -4,6 +4,7 @@ import android.app.PictureInPictureParams
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Rect
 import android.os.Bundle
@@ -19,6 +20,7 @@ import androidx.activity.addCallback
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.browser.customtabs.CustomTabsClient
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.runtime.mutableStateOf
 import androidx.core.app.PictureInPictureModeChangedInfo
@@ -35,6 +37,7 @@ import com.google.common.util.concurrent.ListenableFuture
 import io.github.jordanwoodson.tinyscreen.player.PlaybackService
 import io.github.jordanwoodson.tinyscreen.ui.TinyscreenRoot
 import io.github.jordanwoodson.tinyscreen.web.WebEmbedHolder
+import io.github.jordanwoodson.tinyscreen.web.isBigscreenLink
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 
@@ -107,7 +110,9 @@ class MainActivity : ComponentActivity(), HostActions {
         setContent {
             TinyscreenRoot(activity = this, host = this)
         }
-        handleIntent(intent)
+        // Only a fresh launch brings a new link: recreation (font size, language) and returning after
+        // the process was killed redeliver the intent that first opened the app
+        if (savedInstanceState == null) handleIntent(intent)
 
         orientationListener = object : OrientationEventListener(this) {
             override fun onOrientationChanged(degrees: Int) {
@@ -131,14 +136,18 @@ class MainActivity : ComponentActivity(), HostActions {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
         handleIntent(intent)
     }
 
     private fun handleIntent(intent: Intent?) {
         intent ?: return
+        // Relaunched from Recents with the intent it was first opened with
+        if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
         val link = when (intent.action) {
             Intent.ACTION_VIEW -> intent.dataString
-            Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)
+            // Shared styled text arrives as a CharSequence, which getStringExtra drops
+            Intent.ACTION_SEND -> intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
             else -> null
         } ?: return
         incomingLinks.tryEmit(link)
@@ -221,11 +230,26 @@ class MainActivity : ComponentActivity(), HostActions {
     }
 
     override fun openExternal(url: String) {
+        val uri = url.toUri()
+        // Tinyscreen claims destiny.gg/bigscreen links itself, so Android could hand those straight
+        // back to us: send them to a browser by name, or nowhere
+        val browser = if (isBigscreenLink(url)) browserPackage() ?: return else null
         runCatching {
-            CustomTabsIntent.Builder().setShowTitle(true).build().launchUrl(this, url.toUri())
+            CustomTabsIntent.Builder().setShowTitle(true).build()
+                .apply { browser?.let { intent.setPackage(it) } }
+                .launchUrl(this, uri)
         }.onFailure {
-            runCatching { startActivity(Intent(Intent.ACTION_VIEW, url.toUri())) }
+            runCatching { startActivity(Intent(Intent.ACTION_VIEW, uri).setPackage(browser)) }
         }
+    }
+
+    /** The browser that provides Custom Tabs, or else any app that opens web pages; never Tinyscreen. */
+    private fun browserPackage(): String? {
+        CustomTabsClient.getPackageName(this, null)?.takeIf { it != packageName }?.let { return it }
+        val web = Intent(Intent.ACTION_VIEW, "https://example.com".toUri()).addCategory(Intent.CATEGORY_BROWSABLE)
+        return packageManager.queryIntentActivities(web, PackageManager.MATCH_DEFAULT_ONLY)
+            .map { it.activityInfo.packageName }
+            .firstOrNull { it != packageName }
     }
 
     /** Shows an HTML5 player's fullscreen [view] over the whole window, turning the phone sideways; null ends it. */

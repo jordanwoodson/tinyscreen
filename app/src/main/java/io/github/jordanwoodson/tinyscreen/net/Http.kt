@@ -57,6 +57,12 @@ object Http {
 
 class HttpException(val code: Int, url: String) : IOException("HTTP $code for $url")
 
+/** destiny.gg itself or one of its subdomains, never a lookalike such as xdestiny.gg. */
+fun isDestinyHost(host: String?): Boolean {
+    val h = host?.lowercase()?.removeSuffix(".") ?: return false
+    return h == "destiny.gg" || h.endsWith(".destiny.gg")
+}
+
 /**
  * Shares cookies between OkHttp and WebView, so signing in through the destiny.gg login page
  * in a WebView also authenticates the chat socket and API calls.

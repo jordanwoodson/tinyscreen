@@ -48,6 +48,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
@@ -91,6 +92,9 @@ import io.github.jordanwoodson.tinyscreen.stream.Embed
 import io.github.jordanwoodson.tinyscreen.ui.theme.TinyscreenTheme
 import io.github.jordanwoodson.tinyscreen.web.WebEmbedHolder
 import io.github.jordanwoodson.tinyscreen.web.WebEmbedPlayer
+import io.github.jordanwoodson.tinyscreen.web.firstUrl
+import io.github.jordanwoodson.tinyscreen.web.isBigscreenLink
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -110,12 +114,35 @@ fun TinyscreenRoot(activity: MainActivity, host: HostActions) {
         // keeps playing and chat keeps its place, scroll and open sheets
         var overlay by rememberSaveable { mutableStateOf<Overlay?>(null) }
         val snackbar = remember { SnackbarHostState() }
+        // Every link the app opens goes through here. A bigscreen link without an embed means Destiny's
+        // own stream; handing it to the browser could just bring it back to Tinyscreen.
+        val openUrl: (String) -> Unit = remember(vm, host) {
+            { url ->
+                if (!isBigscreenLink(url)) {
+                    host.openExternal(url)
+                } else if (!vm.openLink(url)) {
+                    vm.closeEmbed()
+                }
+            }
+        }
 
         LaunchedEffect(Unit) {
+            val effects = this
             activity.incomingLinks.collect { link ->
-                if (!vm.openLink(link)) host.openExternal(link)
+                @OptIn(ExperimentalCoroutinesApi::class)
                 activity.incomingLinks.resetReplayCache()
                 overlay = null
+                val url = firstUrl(link)
+                when {
+                    vm.openLink(link) -> Unit
+                    url != null && isBigscreenLink(url) -> vm.closeEmbed()
+                    // Shared text: say so rather than sending it to the browser unasked
+                    url != null -> effects.launch {
+                        val result = snackbar.showSnackbar("Tinyscreen can't play this link", actionLabel = "Open")
+                        if (result == SnackbarResult.ActionPerformed) host.openExternal(url)
+                    }
+                    else -> effects.launch { snackbar.showSnackbar("There's no link to play in that") }
+                }
             }
         }
 
@@ -130,6 +157,7 @@ fun TinyscreenRoot(activity: MainActivity, host: HostActions) {
                 landscape = landscape,
                 overlayOpen = overlay != null,
                 snackbar = snackbar,
+                openUrl = openUrl,
                 onSettings = { overlay = Overlay.Settings },
                 onLogin = { overlay = Overlay.Login },
                 onWhispers = { overlay = Overlay.Whispers },
@@ -181,6 +209,7 @@ private fun MainScreen(
     landscape: Boolean,
     overlayOpen: Boolean,
     snackbar: SnackbarHostState,
+    openUrl: (String) -> Unit,
     onSettings: () -> Unit,
     onLogin: () -> Unit,
     onWhispers: () -> Unit,
@@ -218,11 +247,12 @@ private fun MainScreen(
     }
     val currentOnLogin by rememberUpdatedState(onLogin)
     val currentOnWhispers by rememberUpdatedState(onWhispers)
-    val chat = remember(openEmbed, host) {
+    val currentOpenUrl by rememberUpdatedState(openUrl)
+    val chat = remember(openEmbed) {
         movableContentOf { modifier: Modifier ->
             ChatSlot(
                 onOpenEmbed = openEmbed,
-                onOpenUrl = host::openExternal,
+                onOpenUrl = { currentOpenUrl(it) },
                 onLogin = { currentOnLogin() },
                 onWhispers = { currentOnWhispers() },
                 modifier = modifier,
@@ -237,7 +267,7 @@ private fun MainScreen(
             AppDrawer(
                 nick = me?.nick,
                 unreadWhispers = unread,
-                onOpenUrl = { scope.launch { drawer.close() }; host.openExternal(it) },
+                onOpenUrl = { scope.launch { drawer.close() }; openUrl(it) },
                 onBigscreen = { scope.launch { drawer.close() }; vm.closeEmbed() },
                 onLogin = { scope.launch { drawer.close() }; onLogin() },
                 onLogout = { scope.launch { drawer.close() }; graph.chat.logout() },
