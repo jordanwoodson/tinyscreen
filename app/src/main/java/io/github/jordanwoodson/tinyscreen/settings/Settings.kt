@@ -80,6 +80,10 @@ data class AppSettings(
     val adblock: Boolean = true,
     // Chat
     val webChat: Boolean = false,
+    val platformChatTabs: Boolean = true,
+    /** Platforms (kick, youtube, …) whose chat tabs are switched off. */
+    val hiddenChatPlatforms: Set<String> = emptySet(),
+    val otherStreamChatTab: Boolean = true,
     val showTimestamps: Boolean = false,
     val hideFlairs: Boolean = false,
     val animateEmotes: Boolean = true,
@@ -130,6 +134,9 @@ class SettingsRepository(private val store: DataStore<Preferences>, scope: Corou
         val nativePlayer = booleanPreferencesKey("native_player")
         val adblock = booleanPreferencesKey("adblock")
         val webChat = booleanPreferencesKey("web_chat")
+        val platformChatTabs = booleanPreferencesKey("platform_chat_tabs")
+        val hiddenChatPlatforms = stringSetPreferencesKey("hidden_chat_platforms")
+        val otherStreamChatTab = booleanPreferencesKey("other_stream_chat_tab")
         val showTimestamps = booleanPreferencesKey("show_timestamps")
         val hideFlairs = booleanPreferencesKey("hide_flairs")
         val animateEmotes = booleanPreferencesKey("animate_emotes")
@@ -179,6 +186,9 @@ class SettingsRepository(private val store: DataStore<Preferences>, scope: Corou
             nativePlayer = this[Keys.nativePlayer] ?: d.nativePlayer,
             adblock = this[Keys.adblock] ?: d.adblock,
             webChat = this[Keys.webChat] ?: d.webChat,
+            platformChatTabs = this[Keys.platformChatTabs] ?: d.platformChatTabs,
+            hiddenChatPlatforms = this[Keys.hiddenChatPlatforms] ?: d.hiddenChatPlatforms,
+            otherStreamChatTab = this[Keys.otherStreamChatTab] ?: d.otherStreamChatTab,
             showTimestamps = this[Keys.showTimestamps] ?: d.showTimestamps,
             hideFlairs = this[Keys.hideFlairs] ?: d.hideFlairs,
             animateEmotes = this[Keys.animateEmotes] ?: d.animateEmotes,
@@ -235,6 +245,9 @@ class SettingsRepository(private val store: DataStore<Preferences>, scope: Corou
         this[Keys.nativePlayer] = s.nativePlayer
         this[Keys.adblock] = s.adblock
         this[Keys.webChat] = s.webChat
+        this[Keys.platformChatTabs] = s.platformChatTabs
+        this[Keys.hiddenChatPlatforms] = s.hiddenChatPlatforms
+        this[Keys.otherStreamChatTab] = s.otherStreamChatTab
         this[Keys.showTimestamps] = s.showTimestamps
         this[Keys.hideFlairs] = s.hideFlairs
         this[Keys.animateEmotes] = s.animateEmotes

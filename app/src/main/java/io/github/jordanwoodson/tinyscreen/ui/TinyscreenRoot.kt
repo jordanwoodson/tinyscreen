@@ -94,6 +94,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.jordanwoodson.tinyscreen.HostActions
 import io.github.jordanwoodson.tinyscreen.MainActivity
 import io.github.jordanwoodson.tinyscreen.TinyscreenApp
+import io.github.jordanwoodson.tinyscreen.chat.platform.PlatformChatPager
 import io.github.jordanwoodson.tinyscreen.chat.ui.ChatHost
 import io.github.jordanwoodson.tinyscreen.player.VideoPlayer
 import io.github.jordanwoodson.tinyscreen.settings.AppSettings
@@ -275,9 +276,10 @@ private fun MainScreen(
     val currentOnLogin by rememberUpdatedState(onLogin)
     val currentOnWhispers by rememberUpdatedState(onWhispers)
     val currentOpenUrl by rememberUpdatedState(openUrl)
-    val chat = remember(openEmbed) {
+    val chat = remember(vm, openEmbed) {
         movableContentOf { modifier: Modifier ->
             ChatSlot(
+                vm = vm,
                 onOpenEmbed = openEmbed,
                 onOpenUrl = { currentOpenUrl(it) },
                 onLogin = { currentOnLogin() },
@@ -365,11 +367,13 @@ private fun MainScreen(
 }
 
 /**
- * The chat pane: native chat, or destiny.gg's own chat page when "Use web chat" is on. This is the
- * one place that builds it; the layouts in [MainScreen] only decide where it goes.
+ * The chat pane: native chat, or destiny.gg's own chat page when "Use web chat" is on, with tabs for
+ * the platform chats around it. This is the one place that builds it; the layouts in [MainScreen]
+ * only decide where it goes.
  */
 @Composable
 private fun ChatSlot(
+    vm: BigscreenViewModel,
     onOpenEmbed: (Embed) -> Unit,
     onOpenUrl: (String) -> Unit,
     onLogin: () -> Unit,
@@ -378,14 +382,16 @@ private fun ChatSlot(
 ) {
     val graph = (LocalContext.current.applicationContext as TinyscreenApp).graph
     val settings by graph.settings.settings.collectAsState()
-    ChatHost(
-        settings = settings,
-        onOpenEmbed = onOpenEmbed,
-        onOpenUrl = onOpenUrl,
-        onLogin = onLogin,
-        onWhispers = onWhispers,
-        modifier = modifier,
-    )
+    PlatformChatPager(vm = vm, settings = settings, onOpenEmbed = onOpenEmbed, onOpenUrl = onOpenUrl, modifier = modifier) { page ->
+        ChatHost(
+            settings = settings,
+            onOpenEmbed = onOpenEmbed,
+            onOpenUrl = onOpenUrl,
+            onLogin = onLogin,
+            onWhispers = onWhispers,
+            modifier = page,
+        )
+    }
 }
 
 @Composable
