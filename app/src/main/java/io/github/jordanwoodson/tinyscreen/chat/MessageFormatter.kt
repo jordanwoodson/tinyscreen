@@ -136,9 +136,17 @@ class MessageFormatter(
             "www.amazon.de" to "destiny0f-21",
         )
 
+        private val HEX = "0123456789abcdef".toCharArray()
+
+        /** chat-gui's message hash: md5 of timestamp, user id and raw text, as lowercase hex. */
         fun hash(timestamp: Long, userId: Long?, raw: String): String {
             val bytes = MessageDigest.getInstance("MD5").digest("$timestamp${userId ?: ""}$raw".toByteArray())
-            return bytes.joinToString("") { "%02x".format(it) }
+            val out = CharArray(bytes.size * 2)
+            bytes.forEachIndexed { i, b ->
+                out[i * 2] = HEX[(b.toInt() shr 4) and 0xF]
+                out[i * 2 + 1] = HEX[b.toInt() and 0xF]
+            }
+            return String(out)
         }
 
         fun withAmazonTag(url: String): String {

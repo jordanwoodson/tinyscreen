@@ -90,12 +90,10 @@ fun NativeChat(
 ) {
     val graph = (LocalContext.current.applicationContext as TinyscreenApp).graph
     val chat = graph.chat
-    val lines by chat.lines.collectAsState()
+    val rows by chat.rows.collectAsState()
     val me by chat.me.collectAsState()
     val emotes by chat.assets.emotes.collectAsState()
     val flairs by chat.assets.flairs.collectAsState()
-    val censored by chat.censored.collectAsState()
-    val revealed by chat.revealed.collectAsState()
     val spotlights by chat.spotlights.collectAsState()
     val pinned by chat.pinned.collectAsState()
     val dismissed by chat.dismissedPins.collectAsState()
@@ -107,7 +105,7 @@ fun NativeChat(
 
     var input by remember { mutableStateOf(TextFieldValue("")) }
     var focused by rememberSaveable { mutableStateOf<String?>(null) }
-    var watchingFocus by rememberSaveable { mutableStateOf(false) }
+    val watchingFocus by chat.watchingOnly.collectAsState()
     var userSheet by rememberSaveable { mutableStateOf<String?>(null) }
     var showUsers by rememberSaveable { mutableStateOf(false) }
     var showEmotes by rememberSaveable { mutableStateOf(false) }
@@ -123,10 +121,6 @@ fun NativeChat(
     val scale = settings.chatFontScale
     val fontSize = (13.5f * scale).sp
     val inlineContent = rememberInlineContent(emotes.byPrefix.values, flairs.values, scale, settings.animateEmotes)
-    val highlightRegex = remember(settings.highlightWords) {
-        settings.highlightWords.filter { it.isNotBlank() }.takeIf { it.isNotEmpty() }
-            ?.let { words -> Regex("\\b(?:${words.joinToString("|") { Regex.escape(it) }})\\b", RegexOption.IGNORE_CASE) }
-    }
     val ctx = LineContext(
         me = me,
         flairs = flairs,
@@ -137,9 +131,6 @@ fun NativeChat(
         animate = settings.animateEmotes,
         greentext = settings.greentext,
         formatEmbeds = settings.formatEmbedLinks,
-        highlightMentions = settings.highlightMentions,
-        highlightWords = highlightRegex,
-        highlightNicks = settings.highlightNicks.map { it.lowercase() }.toSet(),
         tags = remember(settings.taggedUsers) { tagColors(settings.taggedUsers) },
         spotlights = spotlights,
         focused = focused,
@@ -152,33 +143,6 @@ fun NativeChat(
         onEvent = { expandedEvent = it },
     )
 
-    val ignored = remember(settings.ignoredUsers) { settings.ignoredUsers.map { it.lowercase() }.toSet() }
-    val ignoredRegex = remember(settings.ignoredUsers) {
-        settings.ignoredUsers.takeIf { it.isNotEmpty() }?.let { Regex("\\b(?:${it.joinToString("|") { n -> Regex.escape(n) }})\\b", RegexOption.IGNORE_CASE) }
-    }
-    val users by chat.users.collectAsState()
-    val currentEmbed = chat.currentEmbed
-    val visible = remember(lines, ignored, ignoredRegex, censored, revealed, settings.showRemoved, settings.hideNsfw, settings.hideIgnoredMentions, watchingFocus, me) {
-        lines.filter { line ->
-            when (line) {
-                is ChatLine.User -> {
-                    val own = me != null && line.user.key == me?.key
-                    when {
-                        own -> true
-                        line.user.key in ignored -> false
-                        settings.hideIgnoredMentions && ignoredRegex?.containsMatchIn(line.raw) == true -> false
-                        settings.hideNsfw && (line.raw.contains("nsfw", true) || line.raw.contains("nsfl", true)) -> false
-                        line.user.key in censored && line.user.key !in revealed && !settings.showRemoved -> false
-                        watchingFocus && currentEmbed != null && !line.historical && !line.whisper &&
-                            users[line.user.key]?.watching?.matches(currentEmbed) != true -> false
-                        else -> true
-                    }
-                }
-                else -> true
-            }
-        }.asReversed()
-    }
-
     val listState = rememberLazyListState()
     var follow by remember { mutableStateOf(true) }
     val atBottom by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset < 40 } }
@@ -188,8 +152,8 @@ fun NativeChat(
             if (bottom) follow = true
         }
     }
-    LaunchedEffect(visible.firstOrNull()?.key, visible.size) {
-        if (follow && visible.isNotEmpty()) listState.scrollToItem(0)
+    LaunchedEffect(rows.firstOrNull()?.key, rows.size) {
+        if (follow && rows.isNotEmpty()) listState.scrollToItem(0)
     }
 
     Column(modifier.background(ChatColors.Background)) {
@@ -202,15 +166,8 @@ fun NativeChat(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 4.dp),
             ) {
-                items(visible, key = { it.key }, contentType = { it::class }) { line ->
-                    ChatLineView(
-                        line = line,
-                        ctx = ctx,
-                        actions = actions,
-                        censored = line is ChatLine.User && line.user.key in censored && line.user.key !in revealed,
-                        showRemoved = settings.showRemoved,
-                        inlineContent = inlineContent,
-                    )
+                items(rows, key = { it.key }, contentType = { it.line::class }) { row ->
+                    ChatLineView(row, ctx, actions, inlineContent)
                 }
             }
             val pin = pinned
@@ -300,7 +257,7 @@ fun NativeChat(
                 }
             }
             Spacer(Modifier.weight(1f))
-            IconButton(onClick = { watchingFocus = !watchingFocus }) {
+            IconButton(onClick = { chat.setWatchingOnly(!watchingFocus) }) {
                 Icon(
                     if (watchingFocus) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
                     "Only show people watching the same stream",
@@ -326,6 +283,7 @@ fun NativeChat(
         )
     }
     if (showUsers) {
+        val users by chat.users.collectAsState()
         UserListSheet(
             users = users.values.toList(),
             flairs = flairs,
@@ -420,14 +378,15 @@ private fun ChatInput(
 @Composable
 private fun Autocomplete(input: TextFieldValue, chat: ChatRepository, onPick: (TextFieldValue) -> Unit) {
     val emotes by chat.assets.emotes.collectAsState()
-    val users by chat.users.collectAsState()
     val me by chat.me.collectAsState()
     val text = input.text
     val caret = input.selection.end.coerceIn(0, text.length)
     val start = text.lastIndexOfAny(charArrayOf(' ', '\n'), (caret - 1).coerceAtLeast(0)).let { if (caret == 0) 0 else it + 1 }
     val word = if (caret > start) text.substring(start, caret) else ""
-    val suggestions = remember(word, emotes, users, me) {
+    // The user list is read when the word changes rather than watched: it changes all the time
+    val suggestions = remember(word, emotes, me) {
         if (word.isEmpty()) return@remember emptyList()
+        val users = chat.users.value
         val usersOnly = word.startsWith("@") || word.startsWith(">")
         val needle = word.trimStart('@', '>').lowercase()
         val out = mutableListOf<String>()
@@ -537,9 +496,9 @@ private fun PinnedCard(
             Icon(Icons.Filled.Close, "Hide", tint = Color(0xFF9A9A9A), modifier = Modifier.size(18.dp).clickable(onClick = onDismiss))
         }
         val line = ChatLine.User(0, 0, io.github.jordanwoodson.tinyscreen.chat.ChatUser(nick = nick), text, segments,
-            false, false, false, null, emptySet(), "", continued = true)
+            false, false, false, null, emptySet(), "")
         Box(Modifier.heightIn(max = 160.dp)) {
-            ChatLineView(line, ctx.copy(showTime = false, focused = null), actions, censored = false, showRemoved = false, inlineContent = inline)
+            ChatLineView(line, ctx.copy(showTime = false, focused = null), actions, inline, continued = true)
         }
     }
 }

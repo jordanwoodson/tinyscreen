@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import io.github.jordanwoodson.tinyscreen.chat.ChatLine
 import io.github.jordanwoodson.tinyscreen.chat.ChatRepository
+import io.github.jordanwoodson.tinyscreen.chat.ChatRow
 import io.github.jordanwoodson.tinyscreen.chat.ChatUser
 import io.github.jordanwoodson.tinyscreen.chat.Emote
 import io.github.jordanwoodson.tinyscreen.chat.Flair
@@ -103,9 +104,6 @@ data class LineContext(
     val animate: Boolean,
     val greentext: Boolean,
     val formatEmbeds: Boolean,
-    val highlightMentions: Boolean,
-    val highlightWords: Regex?,
-    val highlightNicks: Set<String>,
     val tags: Map<String, Color>,
     val spotlights: Set<String>,
     val focused: String?,
@@ -132,21 +130,9 @@ fun usernameStyle(user: ChatUser, flairs: Map<String, Flair>): SpanStyle {
     }
 }
 
-fun isHighlighted(line: ChatLine.User, ctx: LineContext): Boolean {
-    val me = ctx.me ?: return false
-    if (line.user.key == me.key || line.historical) return false
-    if (line.user.key in ctx.highlightNicks) return true
-    val text = line.segments.filterNot { it is Segment.Link }.joinToString("") {
-        when (it) {
-            is Segment.Text -> it.text
-            is Segment.Mention -> it.text
-            is Segment.EmoteSeg -> it.emote.prefix
-            is Segment.HashLink -> it.text
-            else -> ""
-        }
-    }
-    if (ctx.highlightMentions && Regex("\\b${Regex.escape(me.nick)}\\b", RegexOption.IGNORE_CASE).containsMatchIn(text)) return true
-    return ctx.highlightWords?.containsMatchIn("${line.user.nick} ${line.raw}") == true
+@Composable
+fun ChatLineView(row: ChatRow, ctx: LineContext, actions: LineActions, inlineContent: Map<String, InlineTextContent>) {
+    ChatLineView(row.line, ctx, actions, inlineContent, row.continued, row.censored, row.highlighted)
 }
 
 @Composable
@@ -154,12 +140,13 @@ fun ChatLineView(
     line: ChatLine,
     ctx: LineContext,
     actions: LineActions,
-    censored: Boolean,
-    showRemoved: Boolean,
     inlineContent: Map<String, InlineTextContent>,
+    continued: Boolean = false,
+    censored: Boolean = false,
+    highlighted: Boolean = false,
 ) {
     when (line) {
-        is ChatLine.User -> UserLine(line, ctx, actions, censored, inlineContent)
+        is ChatLine.User -> UserLine(line, ctx, actions, continued, censored, highlighted, inlineContent)
         is ChatLine.Combo -> ComboLine(line, ctx)
         is ChatLine.Info -> InfoLine(line, ctx, actions)
         is ChatLine.Broadcast -> Box(
@@ -194,9 +181,16 @@ fun ChatLineView(
 }
 
 @Composable
-private fun UserLine(line: ChatLine.User, ctx: LineContext, actions: LineActions, censored: Boolean, inline: Map<String, InlineTextContent>) {
+private fun UserLine(
+    line: ChatLine.User,
+    ctx: LineContext,
+    actions: LineActions,
+    continued: Boolean,
+    censored: Boolean,
+    highlighted: Boolean,
+    inline: Map<String, InlineTextContent>,
+) {
     val own = ctx.me != null && line.user.key == ctx.me.key
-    val highlighted = remember(line.key, ctx.me, ctx.highlightWords, ctx.highlightNicks, ctx.highlightMentions) { isHighlighted(line, ctx) }
     val tag = ctx.tags[line.user.key]
     val spotlit = line.hash.isNotEmpty() && line.hash in ctx.spotlights
     val dimmed = ctx.focused != null && line.user.key != ctx.focused && ctx.focused !in line.mentions
@@ -210,7 +204,7 @@ private fun UserLine(line: ChatLine.User, ctx: LineContext, actions: LineActions
         if (ctx.showTime || line.historical) {
             withStyle(SpanStyle(color = ChatColors.Time, fontSize = ctx.fontSize * 0.8f)) { append(timeFormat.format(Date(line.timestamp)) + " ") }
         }
-        if (line.continued && !line.whisper) {
+        if (continued && !line.whisper) {
             withStyle(SpanStyle(color = Color(0xFF414141))) { append("> ") }
         } else {
             if (!ctx.hideFlairs) {

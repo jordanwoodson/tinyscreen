@@ -136,7 +136,6 @@ sealed interface ChatLine {
         val linkTag: LinkTag?,
         val mentions: Set<String>,
         val hash: String,
-        val continued: Boolean = false,
         val pending: Boolean = false,
         val whisper: Boolean = false,
         val historical: Boolean = false,

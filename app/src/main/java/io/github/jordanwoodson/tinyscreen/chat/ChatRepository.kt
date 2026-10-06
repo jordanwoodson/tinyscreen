@@ -13,12 +13,22 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
@@ -103,11 +113,11 @@ class ChatRepository(
     private val _subOnly = MutableStateFlow(0)
     val subOnly: StateFlow<Int> = _subOnly.asStateFlow()
 
-    private val _censored = MutableStateFlow<Set<String>>(emptySet())
-    val censored: StateFlow<Set<String>> = _censored.asStateFlow()
+    private val _censors = MutableStateFlow(Censors())
 
-    private val _revealed = MutableStateFlow<Set<String>>(emptySet())
-    val revealed: StateFlow<Set<String>> = _revealed.asStateFlow()
+    private val _watchingOnly = MutableStateFlow(false)
+    /** "Only show people watching the same stream". */
+    val watchingOnly: StateFlow<Boolean> = _watchingOnly.asStateFlow()
 
     private val _conversations = MutableStateFlow<List<Conversation>>(emptyList())
     val conversations: StateFlow<List<Conversation>> = _conversations.asStateFlow()
@@ -139,8 +149,40 @@ class ChatRepository(
     private val highlighters = ArrayDeque<String>()
     private var lastWhisperer: String? = null
 
+    private val _currentEmbed = MutableStateFlow<Embed?>(null)
+
     /** What the bigscreen is currently showing (for /postembed and the watching filter). */
-    @Volatile var currentEmbed: Embed? = null
+    var currentEmbed: Embed?
+        get() = _currentEmbed.value
+        set(value) { _currentEmbed.value = value }
+
+    private val filters = combine(settingsRepo.settings, _me) { s, me -> ChatFilter.from(s, me) }.distinctUntilChanged()
+
+    private val watchingNicks: Flow<Set<String>?> = combine(_watchingOnly, _currentEmbed) { on, embed -> embed.takeIf { on } }
+        .distinctUntilChanged()
+        .flatMapLatest { embed ->
+            if (embed == null) {
+                flowOf(null)
+            } else {
+                _users.map { users -> users.values.filter { it.watching?.matches(embed) == true }.mapTo(HashSet()) { it.key } }
+            }
+        }
+
+    private val rowBuilder = RowBuilder()
+
+    /**
+     * The lines as the list shows them, newest first: filtered, with continuation and highlights
+     * worked out. Built off the main thread, skipping intermediate states when chat is busy.
+     */
+    val rows: StateFlow<List<ChatRow>> = combine(_lines, filters, _censors, watchingNicks) { lines, filter, censors, watching ->
+        RowInputs(lines, filter, censors, watching)
+    }
+        .conflate()
+        .map { rowBuilder.build(it.lines, it.filter, it.censors, it.watching) }
+        .flowOn(Dispatchers.Default)
+        .stateIn(appScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    private class RowInputs(val lines: List<ChatLine>, val filter: ChatFilter, val censors: Censors, val watching: Set<String>?)
 
     // --- Socket ---
     private var socket: WebSocket? = null
@@ -311,18 +353,18 @@ class ChatRepository(
             }
             "QUIT" -> o?.let {
                 val u = parseUser(it)
-                usersMap.remove(u.key)
                 userSeen.remove(u.key)
-                publishUsers()
+                if (usersMap.remove(u.key) != null) publishUsers()
                 if (settings.showJoinLeave && !history) info(InfoKind.Info, "${u.nick} left.")
             }
             "USERSDELTA" -> {
-                (o?.get("users") as? JsonArray)?.forEach { u -> (u as? JsonObject)?.let { upsert(parseUser(it), publish = false) } }
+                var changed = false
+                (o?.get("users") as? JsonArray)?.forEach { u -> (u as? JsonObject)?.let { if (upsert(parseUser(it), publish = false)) changed = true } }
                 (o?.get("removed") as? JsonArray)?.forEach { r ->
                     val nick = (r as? JsonPrimitive)?.contentOrNull ?: (r as? JsonObject)?.get("nick").str()
-                    nick?.lowercase()?.let { usersMap.remove(it) }
+                    if (nick?.lowercase()?.let { usersMap.remove(it) } != null) changed = true
                 }
-                publishUsers()
+                if (changed) publishUsers()
             }
             "UPDATEUSER" -> o?.let {
                 val u = parseUser(it)
@@ -457,8 +499,6 @@ class ChatRepository(
         }
 
         val formatted = formatter.format(text, user)
-        val prev = current.lastOrNull()
-        val continued = prev is ChatLine.User && prev.user.key == user.key && !prev.whisper && !prev.historical
         val line = ChatLine.User(
             key = key(),
             timestamp = ts,
@@ -471,7 +511,6 @@ class ChatRepository(
             linkTag = formatted.linkTag,
             mentions = formatted.mentions,
             hash = hash,
-            continued = continued,
         )
         append(line)
 
@@ -565,11 +604,15 @@ class ChatRepository(
     }
 
     private fun censor(nickKey: String) {
-        _censored.value = _censored.value + nickKey
+        _censors.value = _censors.value.censor(nickKey)
     }
 
     fun reveal(nickKey: String) {
-        _revealed.value = _revealed.value + nickKey
+        scope.launch { _censors.value = _censors.value.reveal(nickKey) }
+    }
+
+    fun setWatchingOnly(on: Boolean) {
+        _watchingOnly.value = on
     }
 
     private fun onError(o: JsonObject?, p: JsonElement) {
@@ -773,11 +816,15 @@ class ChatRepository(
     private fun parseUser(o: JsonObject): ChatUser = runCatching { json.decodeFromJsonElement<ChatUser>(o) }
         .getOrElse { ChatUser(nick = o["nick"].str().orEmpty()) }
 
-    private fun upsert(user: ChatUser, publish: Boolean = true) {
-        if (user.nick.isBlank()) return
-        usersMap[user.key] = user
+    /** Returns whether anything about the user changed. */
+    private fun upsert(user: ChatUser, publish: Boolean = true): Boolean {
+        if (user.nick.isBlank()) return false
+        val old = usersMap.put(user.key, user)
         userSeen[user.key] = now()
-        if (publish) publishUsers()
+        // Every MSG carries its author: only republish the user list when someone actually changed
+        val changed = old != user
+        if (publish && changed) publishUsers()
+        return changed
     }
 
     private var publishPending = false
@@ -879,13 +926,7 @@ class ChatRepository(
         if (!sendRaw("MSG", buildJsonObject { put("data", text) })) return
         if (!singleEmote) {
             val f = formatter.format(text, me)
-            val prev = _lines.value.lastOrNull()
-            append(
-                ChatLine.User(
-                    key(), now(), me, text, f.segments, f.action, f.greentext, f.sus, f.linkTag, f.mentions,
-                    hash = "", continued = prev is ChatLine.User && prev.user.key == me.key && !prev.whisper, pending = true,
-                ),
-            )
+            append(ChatLine.User(key(), now(), me, text, f.segments, f.action, f.greentext, f.sus, f.linkTag, f.mentions, hash = "", pending = true))
         }
     }
 
@@ -1082,7 +1123,7 @@ class ChatRepository(
         var body = text.trim()
         if (!body.contains('?')) return info(InfoKind.Error, usage)
         var timeMs = 30_000L
-        Regex("\\b([0-9]+(?:m|s))$", RegexOption.IGNORE_CASE).find(body)?.let { m ->
+        POLL_TIME.find(body)?.let { m ->
             val v = m.groupValues[1]
             val n = v.dropLast(1).toLong()
             timeMs = if (v.endsWith("m", ignoreCase = true)) n * 60_000 else n * 1000
@@ -1090,9 +1131,9 @@ class ChatRepository(
         }
         timeMs = timeMs.coerceIn(5_000, 600_000)
         val question = body.substringBefore('?').trim() + "?"
-        val opts = body.substringAfter('?').split(Regex("\\bor\\b", RegexOption.IGNORE_CASE)).map { it.trim() }.filter { it.isNotEmpty() }
+        val opts = body.substringAfter('?').split(POLL_OR).map { it.trim() }.filter { it.isNotEmpty() }
         val options = opts.ifEmpty { listOf("Yes", "No") }
-        if (Regex("^(how|why|when|what|where)\\b", RegexOption.IGNORE_CASE).containsMatchIn(question) && options.size < 2) {
+        if (POLL_OPEN_QUESTION.containsMatchIn(question) && options.size < 2) {
             return info(InfoKind.Error, usage)
         }
         sendRaw("STARTPOLL", buildJsonObject {
@@ -1152,12 +1193,16 @@ class ChatRepository(
         private val SLASH_WORD = Regex("^/\\w+ ")
         private val COMMAND = Regex("^/([a-z0-9]+)\\s?", RegexOption.IGNORE_CASE)
         private val NICK = Regex("^\\w{3,20}$")
+        private val DURATION = Regex("^(\\d+)(s(?:econds?)?|m(?:inutes?)?|h(?:ours?)?|d(?:ays?)?)?$", RegexOption.IGNORE_CASE)
+        private val POLL_TIME = Regex("\\b([0-9]+(?:m|s))$", RegexOption.IGNORE_CASE)
+        private val POLL_OR = Regex("\\bor\\b", RegexOption.IGNORE_CASE)
+        private val POLL_OPEN_QUESTION = Regex("^(how|why|when|what|where)\\b", RegexOption.IGNORE_CASE)
 
         fun validNick(nick: String) = NICK.matches(nick)
 
         /** "10m" → nanoseconds, default unit seconds. */
         fun parseDurationNanos(value: String): Long? {
-            val m = Regex("^(\\d+)(s(?:econds?)?|m(?:inutes?)?|h(?:ours?)?|d(?:ays?)?)?$", RegexOption.IGNORE_CASE).find(value) ?: return null
+            val m = DURATION.find(value) ?: return null
             val n = m.groupValues[1].toLong()
             val ms = when (m.groupValues[2].firstOrNull()?.lowercaseChar()) {
                 'm' -> n * 60_000
