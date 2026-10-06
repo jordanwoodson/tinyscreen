@@ -23,6 +23,7 @@ import androidx.activity.viewModels
 import androidx.browser.customtabs.CustomTabsClient
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.runtime.mutableStateOf
+import androidx.core.app.MultiWindowModeChangedInfo
 import androidx.core.app.PictureInPictureModeChangedInfo
 import androidx.core.net.toUri
 import androidx.core.util.Consumer
@@ -55,7 +56,13 @@ class MainActivity : ComponentActivity(), HostActions {
     private var controllerFuture: ListenableFuture<MediaController>? = null
 
     val inPip = mutableStateOf(false)
+    /** The window is wider than it's tall, so the UI uses the landscape layout. */
     val isLandscape = mutableStateOf(false)
+    /**
+     * The landscape layout fills the screen and turning the phone back to portrait is possible. Not in
+     * split-screen, freeform windows or on large screens, where Android ignores orientation requests.
+     */
+    val isFullscreen = mutableStateOf(false)
 
     /** Links handed to the app (deep links, shares) waiting to be opened by the UI. */
     val incomingLinks = MutableSharedFlow<String>(replay = 1, extraBufferCapacity = 4)
@@ -87,6 +94,11 @@ class MainActivity : ComponentActivity(), HostActions {
     private val pipListener = Consumer<PictureInPictureModeChangedInfo> { info ->
         if (inPip.value && !info.isInPictureInPictureMode) leftPipAt = System.currentTimeMillis()
         inPip.value = info.isInPictureInPictureMode
+        updateWindowState(resources.configuration)
+    }
+
+    private val multiWindowListener = Consumer<MultiWindowModeChangedInfo> {
+        updateWindowState(resources.configuration)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -95,10 +107,10 @@ class MainActivity : ComponentActivity(), HostActions {
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
         )
         super.onCreate(savedInstanceState)
-        isLandscape.value = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-        applySystemBars()
+        updateWindowState(resources.configuration)
         webEmbed.attach(this, openUrl = ::openExternal, showFullscreen = ::showWebFullscreen)
         addOnPictureInPictureModeChangedListener(pipListener)
+        addOnMultiWindowModeChangedListener(multiWindowListener)
         graph.player.player.addListener(playerListener)
         lifecycleScope.launch {
             graph.settings.settings.collect { updatePipParams() }
@@ -183,14 +195,24 @@ class MainActivity : ComponentActivity(), HostActions {
         webEmbed.detach(this)
         graph.player.player.removeListener(playerListener)
         removeOnPictureInPictureModeChangedListener(pipListener)
+        removeOnMultiWindowModeChangedListener(multiWindowListener)
         super.onDestroy()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        isLandscape.value = newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE
+        updateWindowState(newConfig)
+    }
+
+    private fun updateWindowState(config: Configuration) {
+        isLandscape.value = config.orientation == Configuration.ORIENTATION_LANDSCAPE
+        isFullscreen.value = isLandscape.value && canRotate(config)
         applySystemBars()
     }
+
+    /** Whether orientation requests take effect: Android ignores them in multi-window and on large screens. */
+    private fun canRotate(config: Configuration = resources.configuration): Boolean =
+        !isInMultiWindowMode && !isInPictureInPictureMode && config.smallestScreenWidthDp < 600
 
     private fun applySystemBars() {
         val controller = WindowCompat.getInsetsController(window, window.decorView)
@@ -214,6 +236,7 @@ class MainActivity : ComponentActivity(), HostActions {
     }
 
     override fun setFullscreen(fullscreen: Boolean) {
+        if (!canRotate()) return
         val target = if (fullscreen) {
             ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         } else {

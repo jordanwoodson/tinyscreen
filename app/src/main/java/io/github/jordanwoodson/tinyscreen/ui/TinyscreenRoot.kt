@@ -110,6 +110,7 @@ fun TinyscreenRoot(activity: MainActivity, host: HostActions) {
         val webEmbed: WebEmbedHolder = viewModel()
         val inPip by activity.inPip
         val landscape by activity.isLandscape
+        val fullscreen by activity.isFullscreen
         // Settings, Login and Whispers cover the main screen instead of replacing it, so the stream
         // keeps playing and chat keeps its place, scroll and open sheets
         var overlay by rememberSaveable { mutableStateOf<Overlay?>(null) }
@@ -155,6 +156,7 @@ fun TinyscreenRoot(activity: MainActivity, host: HostActions) {
                 settings = settings,
                 inPip = inPip,
                 landscape = landscape,
+                fullscreen = fullscreen,
                 overlayOpen = overlay != null,
                 snackbar = snackbar,
                 openUrl = openUrl,
@@ -207,6 +209,8 @@ private fun MainScreen(
     settings: AppSettings,
     inPip: Boolean,
     landscape: Boolean,
+    /** Landscape that Back can leave by turning the phone back to portrait; see [MainActivity.isFullscreen]. */
+    fullscreen: Boolean,
     overlayOpen: Boolean,
     snackbar: SnackbarHostState,
     openUrl: (String) -> Unit,
@@ -232,7 +236,8 @@ private fun MainScreen(
     LaunchedEffect(inPip) { if (inPip) drawer.snapTo(DrawerValue.Closed) }
 
     BackHandler(enabled = !overlayOpen && drawer.isOpen) { scope.launch { drawer.close() } }
-    BackHandler(enabled = !overlayOpen && landscape && !drawer.isOpen) { host.setFullscreen(false) }
+    // In split-screen or on a large screen Android ignores the request, so Back has to leave as usual
+    BackHandler(enabled = !overlayOpen && fullscreen && !drawer.isOpen) { host.setFullscreen(false) }
     BackHandler(enabled = !overlayOpen && chatOnly && !landscape) { chatOnly = false }
 
     val openEmbed: (Embed) -> Unit = remember(vm) { { embed -> vm.setEmbed(embed); chatOnly = false } }
@@ -292,6 +297,7 @@ private fun MainScreen(
                     settings = settings,
                     cinema = cinema,
                     onCinema = { cinema = !cinema },
+                    onMenu = { scope.launch { drawer.open() } },
                     stream = stream,
                     chat = chat,
                 )
@@ -524,11 +530,13 @@ fun ChatControlBar(
     onPopout: () -> Unit,
     onSwap: (() -> Unit)?,
     onClose: (() -> Unit)?,
+    onMenu: (() -> Unit)? = null,
 ) {
     Row(
         Modifier.fillMaxWidth().height(36.dp).background(Color(0xFF111113)),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        onMenu?.let { BarButton(Icons.Filled.Menu, "Menu", onClick = it) }
         BarButton(Icons.Filled.Refresh, "Refresh", onClick = onRefresh)
         Row(
             Modifier
@@ -563,6 +571,7 @@ private fun LandscapeLayout(
     settings: AppSettings,
     cinema: Boolean,
     onCinema: () -> Unit,
+    onMenu: () -> Unit,
     stream: @Composable (modifier: Modifier, inPip: Boolean, fullscreen: Boolean) -> Unit,
     chat: @Composable (Modifier) -> Unit,
     modifier: Modifier = Modifier,
@@ -624,6 +633,8 @@ private fun LandscapeLayout(
                             onPopout = toggleChat,
                             onSwap = { graph.settings.launchUpdate(graph.scope) { it.copy(chatOnLeft = !it.chatOnLeft) } },
                             onClose = toggleChat,
+                            // The portrait top bar isn't here, and split-screen can't rotate back to it
+                            onMenu = onMenu,
                         )
                         chat(Modifier.weight(1f).fillMaxWidth())
                     }
@@ -666,15 +677,23 @@ private fun LandscapeLayout(
             visible = !chatVisible,
             modifier = Modifier.align(if (settings.chatOnLeft) Alignment.CenterStart else Alignment.CenterEnd),
         ) {
-            Surface(
-                color = Color(0xFF1C1D20).copy(alpha = 0.85f),
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier.padding(4.dp).clickable { toggleChat() },
-            ) {
-                Icon(Icons.AutoMirrored.Filled.Chat, "Open chat", tint = Color.White, modifier = Modifier.padding(10.dp))
+            Column {
+                FloatingBarButton(Icons.Filled.Menu, "Menu", onClick = onMenu)
+                FloatingBarButton(Icons.AutoMirrored.Filled.Chat, "Open chat", onClick = toggleChat)
             }
         }
     }
 }
 
 private enum class LandscapePart { Stream, Handle, Chat, Hidden }
+
+@Composable
+private fun FloatingBarButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+    Surface(
+        color = Color(0xFF1C1D20).copy(alpha = 0.85f),
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier.padding(4.dp).clickable(onClick = onClick),
+    ) {
+        Icon(icon, label, tint = Color.White, modifier = Modifier.padding(10.dp))
+    }
+}
