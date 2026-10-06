@@ -30,7 +30,7 @@ import kotlinx.coroutines.launch
 class AppGraph(val app: Application) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val settings = SettingsRepository(app, scope)
-    val player by lazy { PlayerHolder(app, scope) }
+    val player by lazy { PlayerHolder(app, scope, network.online) }
     val live by lazy { LiveRepository(app, scope) }
     val network by lazy { NetworkMonitor(app) }
     val chatAssets by lazy { ChatAssets(app) }

@@ -170,7 +170,7 @@ fun VideoPlayer(
                             offset.x > third * 2 -> {
                                 holder.player.seekForward(); seekFeedback = "+10s"
                             }
-                            else -> if (state.isPlaying) holder.player.pause() else holder.player.play()
+                            else -> if (state.isPlaying) holder.player.pause() else holder.resume()
                         }
                     },
                 )
@@ -233,6 +233,9 @@ fun VideoPlayer(
             }
         }
 
+        val recovery by holder.recovery.collectAsState()
+        // Automatic retries show as buffering; the error only once they've stopped or wait for a network
+        val retrying = state.error != null && recovery == Recovery.Retrying
         if (adBreak) {
             Surface(
                 color = Color.Black.copy(alpha = 0.8f),
@@ -245,7 +248,7 @@ fun VideoPlayer(
                     Text(if (inPip) "Ad blocked" else "Ad break blocked — stream resumes shortly", color = Color.White)
                 }
             }
-        } else if (state.isBuffering && state.error == null) {
+        } else if ((state.isBuffering && state.error == null) || retrying) {
             CircularProgressIndicator(Modifier.align(Alignment.Center).size(if (inPip) 28.dp else 44.dp), color = Color.White)
         }
 
@@ -268,14 +271,19 @@ fun VideoPlayer(
             }
         }
 
-        state.error?.let { err ->
+        state.error?.takeUnless { retrying }?.let { err ->
             if (!inPip) {
                 Column(
                     Modifier.align(Alignment.Center).background(Scrim, RoundedCornerShape(12.dp)).padding(16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Text("Playback error", color = Color.White, fontWeight = FontWeight.Bold)
-                    Text(err.errorCodeName, color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
+                    val (headline, detail) = when (recovery) {
+                        Recovery.WaitingForNetwork -> "No connection" to "Resumes when you're back online"
+                        Recovery.Offline -> "Stream ended" to "The channel is offline"
+                        else -> "Playback error" to err.errorCodeName
+                    }
+                    Text(headline, color = Color.White, fontWeight = FontWeight.Bold)
+                    Text(detail, color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
                     Spacer(Modifier.height(8.dp))
                     FilledTonalButton(onClick = onReload) {
                         Icon(Icons.Filled.Refresh, null)
@@ -386,10 +394,10 @@ private fun Controls(
                     onInteract()
                     when {
                         state.error != null -> onReload()
-                        state.isEnded -> { player.seekToDefaultPosition(); player.play() }
+                        state.isEnded -> holder.resume()
                         player.isPlaying || (player.playWhenReady && state.isBuffering) -> player.pause()
                         else -> {
-                            if (state.isLive && !state.atLiveEdge && state.liveOffsetMs > 60_000) holder.goLive() else player.play()
+                            if (state.isLive && !state.atLiveEdge && state.liveOffsetMs > 60_000) holder.goLive() else holder.resume()
                         }
                     }
                 },

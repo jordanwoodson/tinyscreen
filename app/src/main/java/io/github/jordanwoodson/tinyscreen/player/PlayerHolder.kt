@@ -32,6 +32,7 @@ import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import io.github.jordanwoodson.tinyscreen.net.Http
 import io.github.jordanwoodson.tinyscreen.settings.Quality
+import io.github.jordanwoodson.tinyscreen.stream.resolvers.StreamOfflineException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -42,8 +43,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 enum class StreamKind { Hls, Dash, Progressive }
 
@@ -71,8 +74,26 @@ data class ResolvedStream(
 
 data class QualityOption(val label: String, val height: Int, val bitrate: Int, val group: TrackGroup, val trackIndex: Int)
 
+/** What automatic recovery is doing about the current playback error. */
+enum class Recovery {
+    None,
+
+    /** Trying again by itself; the player shows a spinner rather than the error. */
+    Retrying,
+
+    /** Offline: tries again as soon as the phone has a network. */
+    WaitingForNetwork,
+
+    /** The channel went offline. */
+    Offline,
+
+    /** Out of attempts: waits for the Retry button. */
+    GaveUp,
+}
+
+/** [online] is the phone's network state ([io.github.jordanwoodson.tinyscreen.net.NetworkMonitor.online]). */
 @OptIn(UnstableApi::class)
-class PlayerHolder(context: Context, private val scope: CoroutineScope) {
+class PlayerHolder(context: Context, private val scope: CoroutineScope, private val online: StateFlow<Boolean>) {
     private val appContext = context.applicationContext
 
     @Volatile private var currentHeaders: Map<String, String> = emptyMap()
@@ -132,6 +153,12 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
     private val _qualityPicks = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val qualityPicks: SharedFlow<String> = _qualityPicks
 
+    private val _recovery = MutableStateFlow(Recovery.None)
+    val recovery: StateFlow<Recovery> = _recovery.asStateFlow()
+
+    private val _isPlaying = MutableStateFlow(false)
+    val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
+
     private var defaultQuality = Quality.AUTO
     private var qualityPickedByHand = false
 
@@ -170,11 +197,26 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
                 if (playbackState == Player.STATE_READY) {
                     retries = 0
                     behindLiveRetried = false
+                    _recovery.value = Recovery.None
                 }
                 stallJob?.cancel()
                 if (playbackState == Player.STATE_BUFFERING) stallJob = scope.launch { watchForGapStall() }
             }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                _isPlaying.value = isPlaying
+            }
         })
+        // A playback that ran out of attempts while the network was flaky gets a fresh start when it's back
+        scope.launch {
+            online.collect { isOnline ->
+                val error = player.playerError
+                if (isOnline && error != null && _recovery.value == Recovery.GaveUp) {
+                    retries = 0
+                    recover(error)
+                }
+            }
+        }
     }
 
     /**
@@ -202,6 +244,7 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
         upgradeJob?.cancel()
         retries = 0
         behindLiveRetried = false
+        _recovery.value = Recovery.None
         currentHeaders = stream.headers
         currentRewriter = rewriterFor(stream)
         AdBreakMonitor.claim(currentRewriter)
@@ -235,6 +278,7 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
     fun stop() {
         retryJob?.cancel()
         upgradeJob?.cancel()
+        _recovery.value = Recovery.None
         AdBreakMonitor.claim(null)
         player.stop()
         player.clearMediaItems()
@@ -295,46 +339,99 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
 
     private fun recover(error: PlaybackException) {
         val stream = _current.value ?: return
+        retryJob?.cancel()
         if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW && stream.isLive && !behindLiveRetried) {
             // Falling behind the live window isn't a failure: back to the live edge straight away
             behindLiveRetried = true
-            retryJob?.cancel()
             player.seekToDefaultPosition()
             player.prepare()
             return
         }
-        if (retries >= 6) return
-        retries++
-        retryJob?.cancel()
-        retryJob = scope.launch {
-            delay(1_000L * retries)
-            val behindLive = error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW
-            val stuck = error.cause is HlsPlaylistTracker.PlaylistStuckException
-            val httpError = error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
-            if ((httpError || stuck) && stream.refresh != null) {
-                val fresh = try {
-                    withContext(Dispatchers.IO) { stream.refresh.invoke() }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.w(TAG, "refresh failed: ${e.message}")
-                    null
-                }
-                // Another stream may have started while the refresh ran
-                if (_current.value !== stream) return@launch
-                if (fresh != null) {
-                    val keep = retries
-                    val position = player.currentPosition
-                    val titled = fresh.copy(title = fresh.title ?: stream.title)
-                    play(if (fresh.isLive) titled else titled.copy(startPositionMs = position), keepQuality = true)
-                    retries = keep
-                    return@launch
-                }
+        val network = isNetworkError(error)
+        if (network && !online.value) {
+            _recovery.value = Recovery.WaitingForNetwork
+            retryJob = scope.launch {
+                online.first { it }
+                retry(stream, error)
             }
-            if (behindLive) player.seekToDefaultPosition()
-            player.prepare()
-            player.play()
+            return
         }
+        // Live streams keep trying through a dead zone; anything else gets a few attempts
+        if (!(network && stream.isLive) && retries >= MAX_RETRIES) {
+            _recovery.value = Recovery.GaveUp
+            return
+        }
+        retries++
+        _recovery.value = Recovery.Retrying
+        val wait = if (stream.isLive) (1_000L shl (retries - 1).coerceAtMost(5)).coerceAtMost(30_000) else 1_000L * retries
+        retryJob = scope.launch {
+            // Go straight away if the network drops and comes back in the meantime
+            withTimeoutOrNull(wait) {
+                online.first { !it }
+                online.first { it }
+            }
+            retry(stream, error)
+        }
+    }
+
+    private suspend fun retry(stream: ResolvedStream, error: PlaybackException) {
+        if (_current.value !== stream) return
+        val stuck = error.cause is HlsPlaylistTracker.PlaylistStuckException
+        val httpError = error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+        // Tokens expire (Twitch after 20 minutes, Kick after 10), and a long outage can outlive them
+        if ((httpError || stuck || retries > 2) && stream.refresh != null) {
+            val fresh = try {
+                withContext(Dispatchers.IO) { stream.refresh.invoke() }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: StreamOfflineException) {
+                _recovery.value = Recovery.Offline
+                return
+            } catch (e: Exception) {
+                Log.w(TAG, "refresh failed: ${e.message}")
+                null
+            }
+            // Another stream may have started while the refresh ran
+            if (_current.value !== stream) return
+            if (fresh != null) {
+                val keep = retries
+                val position = player.currentPosition
+                val titled = fresh.copy(title = fresh.title ?: stream.title)
+                // Paused (or stopped by the sleep timer) stays that way
+                play(if (fresh.isLive) titled else titled.copy(startPositionMs = position), player.playWhenReady, keepQuality = true)
+                retries = keep
+                _recovery.value = Recovery.Retrying
+                return
+            }
+        }
+        // Back at the live edge after an outage, and paused stays paused
+        if (stream.isLive) player.seekToDefaultPosition()
+        player.prepare()
+    }
+
+    private fun isNetworkError(error: PlaybackException): Boolean = when (error.errorCode) {
+        PlaybackException.ERROR_CODE_IO_UNSPECIFIED,
+        PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+        PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
+        PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
+        PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE,
+        PlaybackException.ERROR_CODE_TIMEOUT,
+        PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW,
+        -> true
+        else -> false
+    }
+
+    /** Play from the controls, picking up again after the sleep timer stopped playback. */
+    fun resume() {
+        when (player.playbackState) {
+            Player.STATE_IDLE -> {
+                if (_current.value?.isLive == true) player.seekToDefaultPosition()
+                player.prepare()
+            }
+            Player.STATE_ENDED -> player.seekToDefaultPosition()
+            else -> Unit
+        }
+        player.play()
     }
 
     // --- Quality ---
@@ -447,11 +544,12 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
 
     fun goLive() {
         player.seekToDefaultPosition()
-        player.play()
+        resume()
     }
 
     private companion object {
         const val TAG = "PlayerHolder"
+        const val MAX_RETRIES = 6
         const val GAP_STALL_MS = 6_000L
         const val GAP_AHEAD_MS = 4_000L
     }

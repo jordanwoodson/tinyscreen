@@ -4,6 +4,7 @@ import android.app.Application
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.media3.common.C
 import io.github.jordanwoodson.tinyscreen.TinyscreenApp
 import io.github.jordanwoodson.tinyscreen.player.ResolvedStream
 import io.github.jordanwoodson.tinyscreen.settings.PlatformPreference
@@ -133,7 +134,8 @@ class BigscreenViewModel(app: Application) : AndroidViewModel(app) {
         return preferred ?: livePlatforms.first()
     }
 
-    private fun load(embed: Embed?, native: Boolean) {
+    /** [resumeAtMs] picks a VOD up where it was (Retry, Reload). */
+    private fun load(embed: Embed?, native: Boolean, resumeAtMs: Long = C.TIME_UNSET) {
         resolveJob?.cancel()
         if (embed == null) {
             player.stop()
@@ -162,7 +164,7 @@ class BigscreenViewModel(app: Application) : AndroidViewModel(app) {
             val stream = result.getOrNull()
             when {
                 stream != null -> {
-                    player.play(stream)
+                    player.play(if (stream.isLive || resumeAtMs == C.TIME_UNSET) stream else stream.copy(startPositionMs = resumeAtMs))
                     _playback.value = Playback.Native(embed, stream)
                 }
                 result.exceptionOrNull() is StreamOfflineException -> {
@@ -224,7 +226,10 @@ class BigscreenViewModel(app: Application) : AndroidViewModel(app) {
 
     fun reload() {
         val embed = content.value.embed?.takeUnless { blockedReason.value != null }
-        load(embed, settings.value.nativePlayer && embed?.hash !in _forceWeb.value)
+        val playing = _playback.value as? Playback.Native
+        val position = player.player.currentPosition
+        val resumeAt = if (playing?.embed == embed && playing?.stream?.isLive == false && position > 0) position else C.TIME_UNSET
+        load(embed, settings.value.nativePlayer && embed?.hash !in _forceWeb.value, resumeAt)
     }
 
     fun consumeMessage() {
