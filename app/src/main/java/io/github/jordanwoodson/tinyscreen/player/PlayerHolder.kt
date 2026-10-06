@@ -16,6 +16,7 @@ import androidx.media3.common.TrackGroup
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
@@ -104,9 +105,19 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope, private 
     private val dataSourceFactory = PlaylistRewritingDataSource.Factory(
         ResolvingDataSource.Factory(DefaultDataSource.Factory(appContext, httpFactory)) { spec ->
             val headers = currentHeaders
-            if (headers.isEmpty()) spec else spec.withAdditionalHeaders(headers)
+            boundedRange(if (headers.isEmpty()) spec else spec.withAdditionalHeaders(headers))
         },
     ) { currentRewriter }
+
+    /**
+     * YouTube refuses open-ended ranges on the files its Android VR client hands out, and those carry
+     * their length (`clen`), so ask for the rest of the file explicitly.
+     */
+    private fun boundedRange(spec: DataSpec): DataSpec {
+        if (spec.length != C.LENGTH_UNSET.toLong() || spec.uri.host?.endsWith("googlevideo.com") != true) return spec
+        val remaining = (spec.uri.getQueryParameter("clen")?.toLongOrNull() ?: return spec) - spec.position
+        return if (remaining > 0) spec.subrange(0, remaining) else spec
+    }
 
     val trackSelector = DefaultTrackSelector(appContext).apply {
         // YouTube masters mix H.264 and VP9; stick to H.264 so quality switches stay seamless
