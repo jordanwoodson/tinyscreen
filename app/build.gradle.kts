@@ -76,6 +76,14 @@ android {
     packaging {
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     }
+
+    // Robolectric tests use android.net.Uri and friends from the real framework
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            it.jvmArgs("--add-opens=java.base/java.io=ALL-UNNAMED", "--add-exports=java.base/jdk.internal.access=ALL-UNNAMED")
+        }
+    }
 }
 
 dependencies {
@@ -112,4 +120,6 @@ dependencies {
     implementation(libs.coil.network.okhttp)
 
     testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
 }
