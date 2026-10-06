@@ -1,0 +1,99 @@
+name: 📦🚀 Release
+
+# Every push to main that changes the app publishes a signed APK as a new GitHub release,
+# which Obtainium picks up as an update. Versions are assigned here: don't bump
+# version_name/version_code or push tags by hand.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "gradle/**"
+      - "*.gradle.kts"
+      - "gradle.properties"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+# Queue releases so two pushes can't claim the same version number
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  # Tinyscreen release certificate; Android refuses updates signed with any other key
+  CERT_SHA256: 39752f6c8f3cd92ecd3dd79261c739ed3a7fb3ba057ed763ab076e1a401dd5ff
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: ⬇️ Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags and history for the version number and notes
+
+      - name: ⚙️ Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: "21"
+          distribution: temurin
+          cache: gradle
+
+      - name: 📌 Assign the next version
+        run: |
+          n=$(git tag --list 'v1.*' | sed 's/^v1\.0\.//' | sort -n | tail -1)
+          n=${n:-0}
+          last_tag=$(git tag --list "v1.0.$n")
+          n=$((n + 1))
+          version="1.0.$n"
+          sed -i "s/^version_name=.*/version_name=$version/; s/^version_code=.*/version_code=$n/" app/gradle.properties
+          echo "LAST_TAG=$last_tag" >> "$GITHUB_ENV"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "Releasing $version (version code $n) after ${last_tag:-nothing}"
+
+      - name: 🔐 Set up release signing
+        env:
+          KEYSTORE_FILE_BASE64: ${{ secrets.KEYSTORE_FILE_BASE64 }}
+          KEYSTORE_FILE: ${{ runner.temp }}/tinyscreen-release.jks
+          KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_KEY_ALIAS }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
+        run: |
+          printf '%s' "$KEYSTORE_FILE_BASE64" | base64 -d > "$KEYSTORE_FILE"
+          python3 scripts/write-signing-properties.py
+
+      - name: 🤖📦 Test and build
+        run: ./gradlew :app:testDebugUnitTest :app:assembleRelease
+
+      - name: 🔏 Check the signature and name the APK
+        working-directory: app/build/outputs/apk/release
+        run: |
+          apksigner="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner"
+          "$apksigner" verify --print-certs app-release.apk | grep -qi "SHA-256 digest: $CERT_SHA256" \
+            || { echo "::error::APK is not signed with the Tinyscreen release key"; exit 1; }
+          mv app-release.apk "tinyscreen-v$VERSION.apk"
+          sha256sum "tinyscreen-v$VERSION.apk" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: 🚀 Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            if [ -n "$LAST_TAG" ]; then
+              git log --no-merges --format='- %s' "$LAST_TAG"..HEAD
+            else
+              git log --no-merges --format='- %s'
+            fi
+            echo
+            echo "Built from $GITHUB_SHA."
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "v$VERSION" \
+            "app/build/outputs/apk/release/tinyscreen-v$VERSION.apk" \
+            app/build/outputs/apk/release/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" --latest \
+            --title "Tinyscreen $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md"

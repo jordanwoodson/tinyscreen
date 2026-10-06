@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- screen -->
+    <path
+        android:fillColor="#FF4FA3FF"
+        android:pathData="M33,36h40a5,5 0,0 1,5 5v24a5,5 0,0 1,-5 5h-40a5,5 0,0 1,-5 -5v-24a5,5 0,0 1,5 -5z" />
+    <!-- stand -->
+    <path
+        android:fillColor="#FF4FA3FF"
+        android:pathData="M48,70h10v3h-10z M42,73h22a1.5,1.5 0,0 1,0 3h-22a1.5,1.5 0,0 1,0 -3z" />
+    <!-- play -->
+    <path
+        android:fillColor="#FF101418"
+        android:pathData="M48,45.5L48,60.5L61,53Z" />
+    <!-- chat bubble -->
+    <path
+        android:fillColor="#FFFFC531"
+        android:pathData="M72,26h10a5,5 0,0 1,5 5v6a5,5 0,0 1,-5 5h-5l-5,4v-4a5,5 0,0 1,-5 -5v-6a5,5 0,0 1,5 -5z" />
+    <path
+        android:fillColor="#FF101418"
+        android:pathData="M72.5,32.5h9v1.6h-9z M72.5,35.6h6v1.6h-6z" />
+</vector>
