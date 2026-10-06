@@ -65,6 +65,8 @@ data class ResolvedStream(
     val liveTargetOffsetMs: Long = 4_000,
     /** Re-resolves the stream (fresh tokens) when playback hits an unrecoverable error. */
     val refresh: (suspend () -> ResolvedStream)? = null,
+    /** Waits for something better to play (Twitch: full quality once a preroll is over); null if nothing comes. */
+    val upgrade: (suspend () -> ResolvedStream?)? = null,
 )
 
 data class QualityOption(val label: String, val height: Int, val bitrate: Int, val group: TrackGroup, val trackIndex: Int)
@@ -146,6 +148,7 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
         }
 
     private var retryJob: Job? = null
+    private var upgradeJob: Job? = null
     private var stallJob: Job? = null
     private var retries = 0
     private var behindLiveRetried = false
@@ -196,6 +199,7 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
     /** [keepQuality] keeps a hand-picked quality, for refreshes of the same stream. */
     fun play(stream: ResolvedStream, playWhenReady: Boolean = true, keepQuality: Boolean = false) {
         retryJob?.cancel()
+        upgradeJob?.cancel()
         retries = 0
         behindLiveRetried = false
         currentHeaders = stream.headers
@@ -211,10 +215,26 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
         player.setMediaSource(source, stream.startPositionMs)
         player.prepare()
         player.playWhenReady = playWhenReady
+        stream.upgrade?.let { upgrade -> upgradeJob = scope.launch { upgrade(stream, upgrade) } }
+    }
+
+    private suspend fun upgrade(stream: ResolvedStream, upgrade: suspend () -> ResolvedStream?) {
+        val better = try {
+            withContext(Dispatchers.IO) { upgrade() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "upgrade failed: ${e.message}")
+            null
+        } ?: return
+        if (_current.value !== stream) return
+        // Preferences carry over; a rendition picked by hand belongs to the old master
+        play(better.copy(title = better.title ?: stream.title), player.playWhenReady, keepQuality = _selectedQuality.value == null)
     }
 
     fun stop() {
         retryJob?.cancel()
+        upgradeJob?.cancel()
         AdBreakMonitor.claim(null)
         player.stop()
         player.clearMediaItems()
@@ -305,7 +325,8 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
                 if (fresh != null) {
                     val keep = retries
                     val position = player.currentPosition
-                    play(if (fresh.isLive) fresh else fresh.copy(startPositionMs = position), keepQuality = true)
+                    val titled = fresh.copy(title = fresh.title ?: stream.title)
+                    play(if (fresh.isLive) titled else titled.copy(startPositionMs = position), keepQuality = true)
                     retries = keep
                     return@launch
                 }

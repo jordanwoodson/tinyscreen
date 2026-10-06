@@ -11,8 +11,11 @@ import io.github.jordanwoodson.tinyscreen.stream.Embed
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
@@ -39,37 +42,70 @@ class TwitchResolver : StreamResolver {
         }
     }
 
-    private fun resolveLive(embed: Embed): ResolvedStream {
+    private suspend fun resolveLive(embed: Embed): ResolvedStream = coroutineScope {
         val login = embed.id.lowercase()
+        val title = async { runCatching { Twitch.title(login) }.getOrNull() }
         // Pre-flight: start on the first player type whose playlist has no preroll
-        var chosen: TwitchMaster? = null
-        var fallback: TwitchMaster? = null
+        var clean: TwitchMaster? = null
+        var best: TwitchMaster? = null
         for (type in PLAYER_TYPES) {
             val master = runCatching { Twitch.liveMaster(login, type) }.getOrElse {
                 if (it is TwitchOfflineException) throw it
                 null
             } ?: continue
-            if (fallback == null) fallback = master
-            val variant = master.variants.maxByOrNull { it.pixels }?.url ?: continue
+            if (best == null || master.topPixels > best.topPixels) best = master
+            val variant = master.top?.url ?: continue
             val media = runCatching { Twitch.fetch(variant) }.getOrNull() ?: continue
             if (!TwitchAds.hasAds(media)) {
-                chosen = master
+                clean = master
                 break
             }
         }
-        val master = chosen ?: fallback ?: error("Couldn't load $login's stream")
+        val start = clean ?: best ?: error("Couldn't load $login's stream")
+        // Only the 360p "autoplay" type skipped the preroll: play that now, full quality once it's over
+        val later = best?.takeIf { clean != null && it.topPixels > clean.topPixels }
+        liveStream(embed, start, title.await(), later)
+    }
+
+    private fun liveStream(embed: Embed, master: TwitchMaster, title: String?, later: TwitchMaster? = null): ResolvedStream {
+        val login = embed.id.lowercase()
         val filter = TwitchAdFilter(login)
         filter.learnMaster(master.text)
         return ResolvedStream(
             url = master.url,
             kind = StreamKind.Hls,
             isLive = true,
+            title = title,
             subtitle = "$login · Twitch",
             artworkUrl = "https://static-cdn.jtvnw.net/previews-ttv/live_user_$login-640x360.jpg",
             rewriter = filter,
             liveTargetOffsetMs = 5_000,
             refresh = { resolve(embed) },
+            upgrade = later?.let { target -> { afterPreroll(embed, target, title) } },
         )
+    }
+
+    /**
+     * Waits for [target]'s preroll to end, then hands back full quality: a fresh session if one comes
+     * without a preroll (its numbering matches the backups, so later breaks can still swap), else
+     * [target]'s own session, whose preroll has now played out.
+     */
+    private suspend fun afterPreroll(embed: Embed, target: TwitchMaster, title: String?): ResolvedStream? {
+        val variant = target.top?.url ?: return null
+        withTimeoutOrNull(PREROLL_WAIT_MS) {
+            while (true) {
+                delay(5_000)
+                val media = runCatching { Twitch.fetch(variant) }.getOrNull() ?: continue
+                if (!TwitchAds.inBreak(media)) break
+            }
+        } ?: return null
+        val login = embed.id.lowercase()
+        for (type in PLAYER_TYPES - "autoplay") {
+            val fresh = runCatching { Twitch.liveMaster(login, type) }.getOrNull() ?: continue
+            val media = fresh.top?.url?.let { runCatching { Twitch.fetch(it) }.getOrNull() } ?: continue
+            if (!TwitchAds.hasAds(media)) return liveStream(embed, fresh, title)
+        }
+        return liveStream(embed, target, title)
     }
 
     private fun resolveVod(embed: Embed): ResolvedStream {
@@ -115,6 +151,9 @@ class TwitchResolver : StreamResolver {
     companion object {
         /** In order of preference: full quality first, the 360p "autoplay" type as a last resort. */
         val PLAYER_TYPES = listOf("popout", "embed", "autoplay", "site")
+
+        /** Prerolls run 15–60 s. */
+        private const val PREROLL_WAIT_MS = 3 * 60_000L
     }
 }
 
@@ -127,6 +166,8 @@ data class TwitchVariant(val url: String, val width: Int, val height: Int, val f
 /** A live master playlist and the URL it came from (its token and playlist session). */
 class TwitchMaster(val playerType: String, val url: String, val text: String) {
     val variants: List<TwitchVariant> by lazy { Twitch.variants(text) }
+    val top: TwitchVariant? get() = variants.maxByOrNull { it.pixels }
+    val topPixels: Int get() = top?.pixels ?: 0
 }
 
 internal object Twitch {
@@ -148,6 +189,16 @@ internal object Twitch {
             if (!resp.isSuccessful) error("Twitch GQL HTTP ${resp.code}")
             return resp.body!!.string()
         }
+    }
+
+    /** The channel's stream title, for the media notification. */
+    fun title(login: String): String? {
+        val body = buildJsonObject {
+            put("query", "query(\$login:String!){user(login:\$login){broadcastSettings{title}}}")
+            putJsonObject("variables") { put("login", login) }
+        }
+        val json = Http.json.parseToJsonElement(gql(body.toString()))
+        return json["data"]["user"]["broadcastSettings"]["title"].string?.takeIf { it.isNotBlank() }
     }
 
     /** Returns (token value, signature). */
