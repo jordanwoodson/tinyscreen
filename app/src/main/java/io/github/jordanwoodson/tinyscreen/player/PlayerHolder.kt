@@ -11,6 +11,7 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackGroup
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
@@ -29,10 +30,13 @@ import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import io.github.jordanwoodson.tinyscreen.net.Http
+import io.github.jordanwoodson.tinyscreen.settings.Quality
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -59,7 +63,7 @@ data class ResolvedStream(
     val refresh: (suspend () -> ResolvedStream)? = null,
 )
 
-data class QualityOption(val label: String, val height: Int, val bitrate: Int, val groupIndex: Int, val trackIndex: Int)
+data class QualityOption(val label: String, val height: Int, val bitrate: Int, val group: TrackGroup, val trackIndex: Int)
 
 @OptIn(UnstableApi::class)
 class PlayerHolder(context: Context, private val scope: CoroutineScope) {
@@ -114,6 +118,17 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
     private val _audioOnly = MutableStateFlow(false)
     val audioOnly: StateFlow<Boolean> = _audioOnly.asStateFlow()
 
+    /** The [Quality] preference in effect while no rendition is picked by hand. */
+    private val _activeQuality = MutableStateFlow(Quality.AUTO)
+    val activeQuality: StateFlow<String> = _activeQuality.asStateFlow()
+
+    /** Picks from the quality menu, as [Quality] preferences, for "Remember my choice". */
+    private val _qualityPicks = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val qualityPicks: SharedFlow<String> = _qualityPicks
+
+    private var defaultQuality = Quality.AUTO
+    private var qualityPickedByHand = false
+
     var lowLatency: Boolean = true
     private var retryJob: Job? = null
     private var retries = 0
@@ -137,13 +152,19 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
         })
     }
 
-    fun play(stream: ResolvedStream, playWhenReady: Boolean = true) {
+    /** [keepQuality] keeps a hand-picked quality, for refreshes of the same stream. */
+    fun play(stream: ResolvedStream, playWhenReady: Boolean = true, keepQuality: Boolean = false) {
         retryJob?.cancel()
         retries = 0
         AdBreakMonitor.set(false)
         currentHeaders = stream.headers
         currentRewriter = stream.rewriter
         _current.value = stream
+        if (!keepQuality) {
+            qualityPickedByHand = false
+            _selectedQuality.value = null
+            applyQuality(defaultQuality)
+        }
         val source = buildSource(stream)
         player.setMediaSource(source, stream.startPositionMs)
         player.prepare()
@@ -223,7 +244,7 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
                 if (fresh != null) {
                     val keep = retries
                     val position = player.currentPosition
-                    play(if (fresh.isLive) fresh else fresh.copy(startPositionMs = position))
+                    play(if (fresh.isLive) fresh else fresh.copy(startPositionMs = position), keepQuality = true)
                     retries = keep
                     return@launch
                 }
@@ -238,12 +259,12 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
 
     private fun videoQualities(tracks: Tracks): List<QualityOption> {
         val options = mutableListOf<QualityOption>()
-        tracks.groups.forEachIndexed { groupIndex, group ->
-            if (group.type != C.TRACK_TYPE_VIDEO) return@forEachIndexed
+        tracks.groups.forEach { group ->
+            if (group.type != C.TRACK_TYPE_VIDEO) return@forEach
             for (i in 0 until group.length) {
                 if (!group.isTrackSupported(i)) continue
                 val f = group.getTrackFormat(i)
-                options += QualityOption(qualityLabel(f), f.height, f.bitrate, groupIndex, i)
+                options += QualityOption(qualityLabel(f), f.height, f.bitrate, group.mediaTrackGroup, i)
             }
         }
         return options.distinctBy { it.label }.sortedWith(compareByDescending<QualityOption> { it.height }.thenByDescending { it.bitrate })
@@ -255,29 +276,62 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
         return if (fps >= 50) "${h}p$fps" else "${h}p"
     }
 
+    /** The label of the rendition playing now, e.g. "1080p60". */
+    fun playingQualityLabel(): String? = player.videoFormat?.takeIf { it.height > 0 }?.let(::qualityLabel)
+
+    /** A pick from the quality menu (null is Auto). It holds until the next stream. */
     fun selectQuality(option: QualityOption?) {
-        val builder = player.trackSelectionParameters.buildUpon().clearOverridesOfType(C.TRACK_TYPE_VIDEO)
-        if (option != null) {
-            val group = player.currentTracks.groups.getOrNull(option.groupIndex)
-            if (group != null) builder.addOverride(TrackSelectionOverride(group.mediaTrackGroup, option.trackIndex))
+        qualityPickedByHand = true
+        if (option == null) {
+            applyQuality(Quality.AUTO)
+        } else {
+            player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+                .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
+                .addOverride(TrackSelectionOverride(option.group, option.trackIndex))
+                .build()
+            _audioOnly.value = false
         }
-        player.trackSelectionParameters = builder.build()
         _selectedQuality.value = option
+        val pick = if (option == null) Quality.AUTO else option.height.takeIf { it > 0 }?.toString()
+        if (pick != null) _qualityPicks.tryEmit(pick)
     }
 
-    /** Caps automatic quality ("auto", "1080", "720", "480", "360"). */
-    fun applyPreferredQuality(pref: String) {
-        val maxHeight = pref.toIntOrNull() ?: Int.MAX_VALUE
+    /** The [Quality] new streams start at, from the Wi-Fi or mobile setting. */
+    fun setDefaultQuality(pref: String) {
+        defaultQuality = pref
+        if (!qualityPickedByHand) applyQuality(pref)
+    }
+
+    private fun applyQuality(pref: String) {
+        val audio = pref == Quality.AUDIO
+        // Kick and Twitch mux audio into every rendition, so turning video off still downloads
+        // whichever one was playing. Audio only plays the smallest rendition instead (hidden); a
+        // progressive file with its own audio track can stop loading video altogether.
+        val stopVideo = audio && _current.value?.kind == StreamKind.Progressive
+        // A box rather than a height, so portrait streams are capped like landscape ones. The slack
+        // lets 854×480 through a 480p cap.
+        val maxSide = pref.toIntOrNull()?.let { it * 16 / 9 + 2 } ?: Int.MAX_VALUE
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-            .setMaxVideoSize(Int.MAX_VALUE, maxHeight)
+            .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+            .setMaxVideoSize(maxSide, maxSide)
+            // No rendition fits a 1 bps cap, so the selector falls back to the smallest one
+            .setMaxVideoBitrate(if (audio) 1 else Int.MAX_VALUE)
+            // Anything but Auto plays the best rendition within the cap instead of adapting
+            .setForceHighestSupportedBitrate(pref != Quality.AUTO && !audio)
+            .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, stopVideo)
             .build()
+        _audioOnly.value = audio
+        _activeQuality.value = pref
     }
 
+    /** The audio-only switch, which counts as a quality pick. Turning it off goes back to Auto. */
     fun setAudioOnly(enabled: Boolean) {
-        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-            .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, enabled)
-            .build()
-        _audioOnly.value = enabled
+        val pref = if (enabled) Quality.AUDIO else Quality.AUTO
+        qualityPickedByHand = true
+        _selectedQuality.value = null
+        applyQuality(pref)
+        _qualityPicks.tryEmit(pref)
     }
 
     // --- Sleep timer ---

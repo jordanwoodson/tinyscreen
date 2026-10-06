@@ -93,6 +93,7 @@ import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.compose.ContentFrame
 import androidx.media3.ui.compose.SURFACE_TYPE_SURFACE_VIEW
+import io.github.jordanwoodson.tinyscreen.settings.Quality
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -224,6 +225,8 @@ fun VideoPlayer(
 
         val audioOnly by holder.audioOnly.collectAsState()
         if (audioOnly) {
+            // Muxed streams keep playing their smallest rendition; cover it
+            Box(Modifier.fillMaxSize().background(Color.Black))
             Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(Icons.Filled.Headphones, null, tint = Color.White.copy(alpha = 0.7f), modifier = Modifier.size(48.dp))
                 if (!inPip) Text("Audio only", color = Color.White.copy(alpha = 0.7f))
@@ -498,18 +501,26 @@ private fun PlayerSettingsSheet(holder: PlayerHolder, state: PlayerUiState, onDi
     val qualities by holder.qualities.collectAsState()
     val selected by holder.selectedQuality.collectAsState()
     val audioOnly by holder.audioOnly.collectAsState()
+    val active by holder.activeQuality.collectAsState()
     val sleepAt by holder.sleepTimerEndsAt.collectAsState()
+    // The video size changes whenever the rendition does
+    val playing = remember(state.videoSize) { holder.playingQualityLabel() }
     var page by remember { mutableStateOf("main") }
     ModalBottomSheet(onDismissRequest = onDismiss) {
         when (page) {
             "quality" -> LazyColumn {
+                val auto = selected == null && active == Quality.AUTO
+                // A Source or resolution default plays one rendition; tick that one
+                val fixedDefault = selected == null && active != Quality.AUTO && active != Quality.AUDIO
                 item {
-                    SheetOption("Auto", selected = selected == null) { holder.selectQuality(null); onDismiss() }
+                    SheetOption("Auto" + if (auto && playing != null) "  ·  $playing" else "", selected = auto) {
+                        holder.selectQuality(null); onDismiss()
+                    }
                 }
                 items(qualities) { q ->
                     SheetOption(
                         q.label + if (q.bitrate > 0) "  ·  ${"%.1f".format(q.bitrate / 1_000_000f)} Mbps" else "",
-                        selected = selected?.label == q.label,
+                        selected = selected?.label == q.label || (fixedDefault && q.label == playing),
                     ) { holder.selectQuality(q); onDismiss() }
                 }
             }
@@ -526,14 +537,19 @@ private fun PlayerSettingsSheet(holder: PlayerHolder, state: PlayerUiState, onDi
                 }
             }
             else -> Column(Modifier.padding(bottom = 24.dp)) {
-                SheetRow(Icons.Filled.HighQuality, "Quality", selected?.label ?: "Auto${qualities.firstOrNull()?.let { "" } ?: ""}") { page = "quality" }
+                val quality = selected?.label ?: when (active) {
+                    Quality.AUTO -> "Auto" + (playing?.let { " · $it" } ?: "")
+                    Quality.AUDIO -> Quality.label(active)
+                    else -> "${playing ?: Quality.label(active)} (default)"
+                }
+                SheetRow(Icons.Filled.HighQuality, "Quality", quality) { page = "quality" }
                 if (!state.isLive || state.canSeek) {
                     SheetRow(Icons.Filled.Speed, "Playback speed", if (state.speed == 1f) "Normal" else "${state.speed}×") { page = "speed" }
                 }
                 ListItem(
                     leadingContent = { Icon(Icons.Filled.Headphones, null) },
                     headlineContent = { Text("Audio only") },
-                    supportingContent = { Text("Stops downloading video to save data") },
+                    supportingContent = { Text("Hides the video and drops to the smallest stream to save data") },
                     trailingContent = { Switch(checked = audioOnly, onCheckedChange = { holder.setAudioOnly(it) }) },
                     colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                 )

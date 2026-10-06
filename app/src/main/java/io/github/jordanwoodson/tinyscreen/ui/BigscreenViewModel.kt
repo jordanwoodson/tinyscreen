@@ -114,9 +114,6 @@ class BigscreenViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             settings.map { it.lowLatency }.distinctUntilChanged().collect { player.lowLatency = it }
         }
-        viewModelScope.launch {
-            settings.map { it.preferredQuality }.distinctUntilChanged().collect { player.applyPreferredQuality(it) }
-        }
     }
 
     private fun pickPlatform(streams: List<StreamEntry>, current: String?, pref: PlatformPreference): String {

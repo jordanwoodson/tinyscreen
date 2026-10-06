@@ -115,7 +115,8 @@ fun TinyscreenRoot(activity: MainActivity, host: HostActions) {
         when (screen) {
             Screen.Settings -> {
                 BackHandler { screen = Screen.Main }
-                SettingsScreen(settings, onChange = { graph.settings.launchUpdate(graph.scope, it) }, onBack = { screen = Screen.Main })
+                val metered by graph.network.metered.collectAsState()
+                SettingsScreen(settings, metered, onChange = { graph.settings.launchUpdate(graph.scope, it) }, onBack = { screen = Screen.Main })
             }
             Screen.Login -> {
                 BackHandler { screen = Screen.Main }

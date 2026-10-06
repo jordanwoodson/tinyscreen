@@ -7,6 +7,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import io.github.jordanwoodson.tinyscreen.chat.ChatAssets
 import io.github.jordanwoodson.tinyscreen.chat.ChatNotifier
 import io.github.jordanwoodson.tinyscreen.chat.ChatRepository
+import io.github.jordanwoodson.tinyscreen.net.NetworkMonitor
 import io.github.jordanwoodson.tinyscreen.player.PlayerHolder
 import io.github.jordanwoodson.tinyscreen.settings.SettingsRepository
 import io.github.jordanwoodson.tinyscreen.stream.LiveRepository
@@ -21,6 +22,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 /** Hand-rolled dependency graph; everything here lives as long as the process. */
@@ -29,6 +32,7 @@ class AppGraph(val app: Application) {
     val settings = SettingsRepository(app, scope)
     val player by lazy { PlayerHolder(app, scope) }
     val live by lazy { LiveRepository(app, scope) }
+    val network by lazy { NetworkMonitor(app) }
     val chatAssets by lazy { ChatAssets(app) }
     val chat by lazy { ChatRepository(app, scope, settings, chatAssets) }
     private val notifier by lazy { ChatNotifier(app) }
@@ -76,6 +80,20 @@ class AppGraph(val app: Application) {
                 }
             }
         })
+        // Streams start at the Wi-Fi or mobile quality; with "Remember my choice", a pick from the
+        // player menu becomes the new default for the network it was made on.
+        scope.launch {
+            combine(settings.settings, network.metered) { s, metered -> if (metered) s.qualityMobile else s.qualityWifi }
+                .distinctUntilChanged()
+                .collect { player.setDefaultQuality(it) }
+        }
+        scope.launch {
+            player.qualityPicks.collect { pick ->
+                if (!settings.settings.value.rememberQuality) return@collect
+                val metered = network.metered.value
+                settings.update { if (metered) it.copy(qualityMobile = pick) else it.copy(qualityWifi = pick) }
+            }
+        }
         scope.launch {
             chat.alerts.collect { (title, text) -> if (!inForeground) notifier.show(title, text) }
         }

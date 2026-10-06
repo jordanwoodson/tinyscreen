@@ -38,11 +38,14 @@ import androidx.compose.ui.unit.dp
 import io.github.jordanwoodson.tinyscreen.BuildConfig
 import io.github.jordanwoodson.tinyscreen.settings.AppSettings
 import io.github.jordanwoodson.tinyscreen.settings.PlatformPreference
+import io.github.jordanwoodson.tinyscreen.settings.Quality
 
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(
     settings: AppSettings,
+    /** Whether the current network is metered, i.e. which quality setting is in use. */
+    metered: Boolean,
     onChange: ((AppSettings) -> AppSettings) -> Unit,
     onBack: () -> Unit,
 ) {
@@ -74,13 +77,26 @@ fun SettingsScreen(
                 ) { label -> onChange { s -> s.copy(preferredPlatform = PlatformPreference.entries.first { it.label == label }) } }
             }
             item {
-                val options = listOf("auto" to "Auto", "1080" to "1080p", "720" to "720p", "480" to "480p", "360" to "360p")
-                ChoiceRow(
-                    "Default quality cap",
-                    "Highest resolution chosen automatically",
-                    options.map { it.second },
-                    options.firstOrNull { it.first == settings.preferredQuality }?.second ?: "Auto",
-                ) { label -> onChange { s -> s.copy(preferredQuality = options.first { it.second == label }.first) } }
+                QualityRow(
+                    "Quality on Wi-Fi",
+                    "Unmetered networks${if (!metered) " · in use now" else ""}. Auto adapts to the connection; " +
+                        "a resolution plays the best stream up to it",
+                    settings.qualityWifi,
+                ) { q -> onChange { it.copy(qualityWifi = q) } }
+            }
+            item {
+                QualityRow(
+                    "Quality on mobile data",
+                    "Metered networks, including hotspots${if (metered) " · in use now" else ""}",
+                    settings.qualityMobile,
+                ) { q -> onChange { it.copy(qualityMobile = q) } }
+            }
+            item {
+                Toggle(
+                    "Remember my choice",
+                    "A quality picked in the player becomes the default for the network you're on",
+                    settings.rememberQuality,
+                ) { v -> onChange { it.copy(rememberQuality = v) } }
             }
             item { Toggle("Native player", "Play Kick, Twitch, YouTube and Rumble in the built-in player instead of web embeds", settings.nativePlayer) { v -> onChange { it.copy(nativePlayer = v) } } }
             item { Toggle("Low latency", "Stay close to the live edge", settings.lowLatency) { v -> onChange { it.copy(lowLatency = v) } } }
@@ -199,6 +215,16 @@ private fun ChoiceRow(title: String, subtitle: String, options: List<String>, se
             }
         },
     )
+}
+
+@Composable
+private fun QualityRow(title: String, subtitle: String, value: String, onSelect: (String) -> Unit) {
+    // A remembered pick can be a resolution that isn't one of the usual choices, such as 160p
+    val current = if (value in Quality.choices || value.toIntOrNull() != null) value else Quality.AUTO
+    val choices = if (current in Quality.choices) Quality.choices else Quality.choices + current
+    ChoiceRow(title, subtitle, choices.map(Quality::label), Quality.label(current)) { label ->
+        onSelect(choices.first { Quality.label(it) == label })
+    }
 }
 
 @Composable

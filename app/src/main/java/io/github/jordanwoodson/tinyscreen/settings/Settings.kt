@@ -27,6 +27,25 @@ enum class PlatformPreference(val label: String) {
     Rumble("Rumble"),
 }
 
+/**
+ * Stream quality preferences: "auto" (adapts to the connection), "source" (always the best), a height
+ * such as "720" (the best rendition up to 720p) or "audio" (audio only).
+ */
+object Quality {
+    const val AUTO = "auto"
+    const val SOURCE = "source"
+    const val AUDIO = "audio"
+
+    val choices = listOf(AUTO, SOURCE, "1080", "720", "480", "360", AUDIO)
+
+    fun label(pref: String): String = when (pref) {
+        AUTO -> "Auto"
+        SOURCE -> "Source"
+        AUDIO -> "Audio only"
+        else -> pref.toIntOrNull()?.let { "${it}p" } ?: "Auto"
+    }
+}
+
 data class AppSettings(
     // Appearance
     val dynamicColor: Boolean = true,
@@ -38,7 +57,9 @@ data class AppSettings(
     val showTopEmbeds: Boolean = true,
     // Playback
     val preferredPlatform: PlatformPreference = PlatformPreference.Auto,
-    val preferredQuality: String = "auto",
+    val qualityWifi: String = Quality.AUTO,
+    val qualityMobile: String = Quality.AUTO,
+    val rememberQuality: Boolean = true,
     val backgroundPlayback: Boolean = true,
     val autoPip: Boolean = true,
     val lowLatency: Boolean = true,
@@ -76,7 +97,11 @@ class SettingsRepository(private val context: Context, scope: CoroutineScope) {
         val landscapeChatVisible = booleanPreferencesKey("landscape_chat_visible")
         val showTopEmbeds = booleanPreferencesKey("show_top_embeds")
         val preferredPlatform = stringPreferencesKey("preferred_platform")
-        val preferredQuality = stringPreferencesKey("preferred_quality")
+        /** The old single "quality cap", read once to seed the Wi-Fi and mobile settings. */
+        val legacyQuality = stringPreferencesKey("preferred_quality")
+        val qualityWifi = stringPreferencesKey("quality_wifi")
+        val qualityMobile = stringPreferencesKey("quality_mobile")
+        val rememberQuality = booleanPreferencesKey("remember_quality")
         val backgroundPlayback = booleanPreferencesKey("background_playback")
         val autoPip = booleanPreferencesKey("auto_pip")
         val lowLatency = booleanPreferencesKey("low_latency")
@@ -120,7 +145,9 @@ class SettingsRepository(private val context: Context, scope: CoroutineScope) {
             preferredPlatform = this[Keys.preferredPlatform]
                 ?.let { runCatching { PlatformPreference.valueOf(it) }.getOrNull() }
                 ?: d.preferredPlatform,
-            preferredQuality = this[Keys.preferredQuality] ?: d.preferredQuality,
+            qualityWifi = this[Keys.qualityWifi] ?: this[Keys.legacyQuality] ?: d.qualityWifi,
+            qualityMobile = this[Keys.qualityMobile] ?: this[Keys.legacyQuality] ?: d.qualityMobile,
+            rememberQuality = this[Keys.rememberQuality] ?: d.rememberQuality,
             backgroundPlayback = this[Keys.backgroundPlayback] ?: d.backgroundPlayback,
             autoPip = this[Keys.autoPip] ?: d.autoPip,
             lowLatency = this[Keys.lowLatency] ?: d.lowLatency,
@@ -164,7 +191,10 @@ class SettingsRepository(private val context: Context, scope: CoroutineScope) {
         this[Keys.landscapeChatVisible] = s.landscapeChatVisible
         this[Keys.showTopEmbeds] = s.showTopEmbeds
         this[Keys.preferredPlatform] = s.preferredPlatform.name
-        this[Keys.preferredQuality] = s.preferredQuality
+        remove(Keys.legacyQuality)
+        this[Keys.qualityWifi] = s.qualityWifi
+        this[Keys.qualityMobile] = s.qualityMobile
+        this[Keys.rememberQuality] = s.rememberQuality
         this[Keys.backgroundPlayback] = s.backgroundPlayback
         this[Keys.autoPip] = s.autoPip
         this[Keys.lowLatency] = s.lowLatency
