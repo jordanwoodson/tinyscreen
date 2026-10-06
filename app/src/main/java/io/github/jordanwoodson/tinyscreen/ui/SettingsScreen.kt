@@ -1,5 +1,9 @@
 package io.github.jordanwoodson.tinyscreen.ui
 
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.provider.Settings
+import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,6 +13,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
@@ -29,12 +36,22 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import io.github.jordanwoodson.tinyscreen.BuildConfig
 import io.github.jordanwoodson.tinyscreen.settings.AppSettings
 import io.github.jordanwoodson.tinyscreen.settings.PlatformPreference
@@ -50,13 +67,38 @@ fun SettingsScreen(
     onBack: () -> Unit,
 ) {
     var editing by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val activity = LocalActivity.current
+    val notifications = android.Manifest.permission.POST_NOTIFICATIONS
     var pendingNotify by remember { mutableStateOf<((AppSettings) -> AppSettings)?>(null) }
+    var notificationHelp by remember { mutableStateOf<NotificationHelp?>(null) }
     val permission = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
-    ) { granted -> pendingNotify?.let { if (granted) onChange(it) }; pendingNotify = null }
+    ) { granted ->
+        val change = pendingNotify
+        pendingNotify = null
+        when {
+            granted -> change?.let(onChange)
+            // After a second "Don't allow" Android stops asking; only system settings can allow it now
+            activity != null && !ActivityCompat.shouldShowRequestPermissionRationale(activity, notifications) ->
+                notificationHelp = NotificationHelp.Blocked
+        }
+    }
     val enableNotification: ((AppSettings) -> AppSettings) -> Unit = { change ->
-        pendingNotify = change
-        permission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        when {
+            ContextCompat.checkSelfPermission(context, notifications) == PackageManager.PERMISSION_GRANTED -> {
+                onChange(change)
+                if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) notificationHelp = NotificationHelp.Blocked
+            }
+            activity != null && ActivityCompat.shouldShowRequestPermissionRationale(activity, notifications) -> {
+                pendingNotify = change
+                notificationHelp = NotificationHelp.Rationale
+            }
+            else -> {
+                pendingNotify = change
+                permission.launch(notifications)
+            }
+        }
     }
     Scaffold(
         topBar = {
@@ -134,17 +176,21 @@ fun SettingsScreen(
             }
             item { Toggle("Hide mentions of ignored users", null, settings.hideIgnoredMentions) { v -> onChange { it.copy(hideIgnoredMentions = v) } } }
             item {
+                // Saved when you let go, not on every frame of the drag
+                var fontScale by remember(settings.chatFontScale) { mutableFloatStateOf(settings.chatFontScale) }
                 ListItem(
                     headlineContent = { Text("Chat text size") },
                     supportingContent = {
                         Slider(
-                            value = settings.chatFontScale,
-                            onValueChange = { v -> onChange { it.copy(chatFontScale = v) } },
+                            value = fontScale,
+                            onValueChange = { fontScale = it },
+                            onValueChangeFinished = { onChange { it.copy(chatFontScale = fontScale) } },
                             valueRange = 0.75f..1.6f,
                             steps = 16,
+                            modifier = Modifier.semantics { contentDescription = "Chat text size" },
                         )
                     },
-                    trailingContent = { Text("${(settings.chatFontScale * 100).toInt()}%") },
+                    trailingContent = { Text("${(fontScale * 100).toInt()}%") },
                 )
             }
             item { WordsRow("Highlight words", settings.highlightWords) { editing = "highlight" } }
@@ -166,6 +212,32 @@ fun SettingsScreen(
         }
     }
 
+    when (notificationHelp) {
+        NotificationHelp.Rationale -> AlertDialog(
+            onDismissRequest = { notificationHelp = null; pendingNotify = null },
+            title = { Text("Allow notifications?") },
+            text = { Text("Tinyscreen needs permission to tell you about whispers and mentions while it's in the background.") },
+            confirmButton = {
+                TextButton(onClick = { notificationHelp = null; permission.launch(notifications) }) { Text("Continue") }
+            },
+            dismissButton = { TextButton(onClick = { notificationHelp = null; pendingNotify = null }) { Text("Not now") } },
+        )
+        NotificationHelp.Blocked -> AlertDialog(
+            onDismissRequest = { notificationHelp = null },
+            title = { Text("Notifications are off") },
+            text = { Text("Notifications for Tinyscreen are turned off. You can turn them on in system settings.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    notificationHelp = null
+                    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    runCatching { context.startActivity(intent) }
+                }) { Text("Open settings") }
+            },
+            dismissButton = { TextButton(onClick = { notificationHelp = null }) { Text("Cancel") } },
+        )
+        null -> Unit
+    }
+
     when (editing) {
         "highlight" -> WordListDialog("Highlight words", settings.highlightWords, onDismiss = { editing = null }) { words ->
             onChange { it.copy(highlightWords = words) }
@@ -179,23 +251,26 @@ fun SettingsScreen(
     }
 }
 
+private enum class NotificationHelp { Rationale, Blocked }
+
 @Composable
 private fun Header(text: String) {
     Text(
         text,
         style = MaterialTheme.typography.titleSmall,
         color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 4.dp),
+        modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 4.dp).semantics { heading() },
     )
 }
 
 @Composable
 private fun Toggle(title: String, subtitle: String?, checked: Boolean, onChange: (Boolean) -> Unit) {
+    // The whole row is the switch, so TalkBack reads its title and state together
     ListItem(
         headlineContent = { Text(title) },
         supportingContent = subtitle?.let { { Text(it) } },
-        trailingContent = { Switch(checked = checked, onCheckedChange = onChange) },
-        modifier = Modifier.clickable { onChange(!checked) },
+        trailingContent = { Switch(checked = checked, onCheckedChange = null) },
+        modifier = Modifier.toggleable(value = checked, role = Role.Switch, onValueChange = onChange),
     )
 }
 
@@ -232,7 +307,7 @@ private fun WordsRow(title: String, words: Set<String>, onEdit: () -> Unit) {
     ListItem(
         headlineContent = { Text(title) },
         supportingContent = { Text(if (words.isEmpty()) "None" else words.sorted().joinToString(", ")) },
-        modifier = Modifier.clickable(onClick = onEdit),
+        modifier = Modifier.clickable(onClickLabel = "Edit", role = Role.Button, onClick = onEdit),
     )
 }
 
@@ -241,19 +316,29 @@ private fun WordsRow(title: String, words: Set<String>, onEdit: () -> Unit) {
 fun WordListDialog(title: String, initial: Set<String>, onDismiss: () -> Unit, onSave: (Set<String>) -> Unit) {
     var words by remember { mutableStateOf(initial) }
     var input by remember { mutableStateOf("") }
+    // Text typed but not yet added still counts when you press Save
+    val withInput = { input.trim().takeIf { it.isNotEmpty() }?.let { words + it } ?: words }
+    val add = {
+        words = withInput()
+        input = ""
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {
             Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(value = input, onValueChange = { input = it }, singleLine = true, modifier = Modifier.weight(1f))
+                    OutlinedTextField(
+                        value = input,
+                        onValueChange = { input = it },
+                        label = { Text("Add to the list") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = { add() }),
+                        modifier = Modifier.weight(1f),
+                    )
                     Spacer(Modifier.width(8.dp))
-                    TextButton(onClick = {
-                        val w = input.trim()
-                        if (w.isNotEmpty()) words = words + w
-                        input = ""
-                    }) { Text("Add") }
+                    TextButton(onClick = add) { Text("Add") }
                 }
                 androidx.compose.foundation.layout.FlowRow(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(6.dp)) {
                     words.sorted().forEach { w ->
@@ -267,7 +352,7 @@ fun WordListDialog(title: String, initial: Set<String>, onDismiss: () -> Unit, o
                 }
             }
         },
-        confirmButton = { TextButton(onClick = { onSave(words); onDismiss() }) { Text("Save") } },
+        confirmButton = { TextButton(onClick = { onSave(withInput()); onDismiss() }) { Text("Save") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
