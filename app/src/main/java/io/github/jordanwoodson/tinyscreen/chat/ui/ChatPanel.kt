@@ -54,6 +54,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -115,6 +116,7 @@ fun NativeChat(
     var showUsers by rememberSaveable { mutableStateOf(false) }
     var showEmotes by rememberSaveable { mutableStateOf(false) }
     var expandedEvent by remember { mutableStateOf<PaidEvent?>(null) }
+    var messageMenu by remember { mutableStateOf<ChatLine.User?>(null) }
 
     LaunchedEffect(Unit) { chat.start() }
     LaunchedEffect(Unit) {
@@ -140,13 +142,19 @@ fun NativeChat(
         spotlights = spotlights,
         focused = focused,
     )
-    val actions = LineActions(
-        onUser = { userSheet = it },
-        onEmbed = onOpenEmbed,
-        onUrl = onOpenUrl,
-        onReveal = chat::reveal,
-        onEvent = { expandedEvent = it },
-    )
+    val currentOpenEmbed by rememberUpdatedState(onOpenEmbed)
+    val currentOpenUrl by rememberUpdatedState(onOpenUrl)
+    // One instance for the life of the panel, so rows don't all recompose when a message arrives
+    val actions = remember {
+        LineActions(
+            onUser = { userSheet = it },
+            onEmbed = { currentOpenEmbed(it) },
+            onUrl = { currentOpenUrl(it) },
+            onReveal = chat::reveal,
+            onEvent = { expandedEvent = it },
+            onMessageMenu = { messageMenu = it },
+        )
+    }
 
     val listState = rememberLazyListState()
     var follow by remember { mutableStateOf(true) }
@@ -318,6 +326,21 @@ fun NativeChat(
                 showUsers = false
             },
             onDismiss = { showUsers = false },
+        )
+    }
+    messageMenu?.let { line ->
+        MessageMenuSheet(
+            line = line,
+            me = me,
+            spotlit = line.hash.isNotEmpty() && line.hash in spotlights,
+            onReply = {
+                val text = input.text.trimEnd().let { if (it.isEmpty()) "" else "$it " } + "${line.user.nick} "
+                input = TextFieldValue(text, TextRange(text.length))
+            },
+            onUser = { userSheet = line.user.nick },
+            onSpotlight = { chat.spotlight(line) },
+            onRemoveSpotlight = { chat.removeSpotlight(line.hash) },
+            onDismiss = { messageMenu = null },
         )
     }
     userSheet?.let { nick ->

@@ -3,6 +3,7 @@ package io.github.jordanwoodson.tinyscreen.chat.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,7 +29,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -37,6 +40,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
@@ -115,6 +119,8 @@ data class LineActions(
     val onUrl: (String) -> Unit,
     val onReveal: (String) -> Unit,
     val onEvent: (PaidEvent) -> Unit,
+    /** Long-press on a message: reply, copy, spotlight. */
+    val onMessageMenu: (ChatLine.User) -> Unit = {},
 )
 
 private val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
@@ -191,6 +197,8 @@ private fun UserLine(
     inline: Map<String, InlineTextContent>,
 ) {
     val own = ctx.me != null && line.user.key == ctx.me.key
+    val currentLine by rememberUpdatedState(line)
+    val currentActions by rememberUpdatedState(actions)
     val tag = ctx.tags[line.user.key]
     val spotlit = line.hash.isNotEmpty() && line.hash in ctx.spotlights
     val dimmed = ctx.focused != null && line.user.key != ctx.focused && ctx.focused !in line.mentions
@@ -246,6 +254,7 @@ private fun UserLine(
     Row(
         Modifier
             .fillMaxWidth()
+            .pointerInput(Unit) { detectTapGestures(onLongPress = { currentActions.onMessageMenu(currentLine) }) }
             .background(bg)
             .then(if (spotlit) Modifier.border(1.dp, Color(0xFFFFC531), RoundedCornerShape(4.dp)) else Modifier)
             .then(

@@ -822,7 +822,22 @@ class ChatRepository(
     }
 
     fun removeEvent(uuid: String) {
-        sendRaw("REMOVEEVENT", buildJsonObject { put("data", uuid) })
+        scope.launch { sendRaw("REMOVEEVENT", buildJsonObject { put("data", uuid) }) }
+    }
+
+    /** Mods: highlight a message for everyone (the server hashes the raw text, as chat-gui sends it). */
+    fun spotlight(line: ChatLine.User) {
+        scope.launch {
+            sendRaw("SPOTLIGHT", buildJsonObject {
+                put("nick", line.user.nick)
+                put("messageTimestamp", line.timestamp)
+                put("data", line.raw)
+            })
+        }
+    }
+
+    fun removeSpotlight(hash: String) {
+        scope.launch { sendRaw("UNSPOTLIGHT", buildJsonObject { put("data", hash) }) }
     }
 
     // --- Lines ---

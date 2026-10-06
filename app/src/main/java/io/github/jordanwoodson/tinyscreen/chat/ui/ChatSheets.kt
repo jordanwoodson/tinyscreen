@@ -29,9 +29,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mail
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -39,6 +41,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -50,16 +53,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import io.github.jordanwoodson.tinyscreen.TinyscreenApp
 import io.github.jordanwoodson.tinyscreen.chat.ChatApi
+import io.github.jordanwoodson.tinyscreen.chat.ChatLine
 import io.github.jordanwoodson.tinyscreen.chat.ChatRepository
 import io.github.jordanwoodson.tinyscreen.chat.ChatUser
 import io.github.jordanwoodson.tinyscreen.chat.Emote
@@ -262,6 +268,15 @@ fun UserInfoSheet(
     val ignored = settings.ignoredUsers.any { it.equals(nick, ignoreCase = true) }
     val highlighted = settings.highlightNicks.any { it.equals(nick, ignoreCase = true) }
     val graph = (androidx.compose.ui.platform.LocalContext.current.applicationContext as TinyscreenApp).graph
+    var modAction by remember { mutableStateOf<ModAction?>(null) }
+    modAction?.let { initial ->
+        ModActionDialog(
+            nick = user.nick,
+            initial = initial,
+            onConfirm = { command -> chat.send(command); modAction = null; onDismiss() },
+            onDismiss = { modAction = null },
+        )
+    }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
@@ -334,15 +349,10 @@ fun UserInfoSheet(
                 if (me?.isModerator == true && !user.nick.equals(me.nick, true)) {
                     Text("Moderation", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 4.dp))
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("1m", "10m", "1h", "1d").forEach { t ->
-                            AssistChip(onClick = { chat.send("/mute ${user.nick} $t"); onDismiss() }, label = { Text("Mute $t") })
-                        }
-                        listOf("1d", "7d", "30d", "perm").forEach { t ->
-                            AssistChip(
-                                onClick = { chat.send("/ipban ${user.nick} $t ${user.nick} banned by ${me.nick}."); onDismiss() },
-                                label = { Text("IP Ban $t") },
-                            )
-                        }
+                        AssistChip(onClick = { modAction = ModAction.Mute }, label = { Text("Mute…") })
+                        AssistChip(onClick = { modAction = ModAction.Ban }, label = { Text("Ban…") })
+                        AssistChip(onClick = { chat.send("/unmute ${user.nick}") }, label = { Text("Unmute") })
+                        AssistChip(onClick = { chat.send("/unban ${user.nick}") }, label = { Text("Unban") })
                         user.id?.let { id ->
                             AssistChip(onClick = { onOpenUrl("https://www.destiny.gg/admin/user/$id/edit") }, label = { Text("Admin") })
                         }
@@ -371,4 +381,136 @@ fun UserInfoSheet(
             item { Spacer(Modifier.padding(16.dp)) }
         }
     }
+}
+
+enum class ModAction(val label: String, val durations: List<String>, val default: String) {
+    Mute("Mute", listOf("1m", "10m", "1h", "1d"), "10m"),
+    Ban("Ban", listOf("1h", "1d", "7d", "30d", "perm"), "1d"),
+    IpBan("IP ban", listOf("1h", "1d", "7d", "30d", "perm"), "1d"),
+}
+
+/** Mutes and bans ask first: pick the action and length, and give bans a reason. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun ModActionDialog(nick: String, initial: ModAction, onConfirm: (command: String) -> Unit, onDismiss: () -> Unit) {
+    var action by remember { mutableStateOf(initial) }
+    var duration by remember { mutableStateOf(initial.default) }
+    var reason by remember { mutableStateOf("") }
+    val needsReason = action != ModAction.Mute
+    val forever = duration == "perm"
+    val summary = "${action.label} $nick ${if (forever) "permanently" else "for $duration"}"
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Moderate $nick") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ModAction.entries.forEach { a ->
+                        FilterChip(
+                            selected = a == action,
+                            onClick = {
+                                if (a != action) {
+                                    action = a
+                                    if (duration !in a.durations) duration = a.default
+                                }
+                            },
+                            label = { Text(a.label) },
+                        )
+                    }
+                }
+                Text("For", style = MaterialTheme.typography.labelLarge)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    action.durations.forEach { d ->
+                        FilterChip(selected = d == duration, onClick = { duration = d }, label = { Text(if (d == "perm") "Permanent" else d) })
+                    }
+                }
+                if (needsReason) {
+                    OutlinedTextField(
+                        value = reason,
+                        onValueChange = { reason = it },
+                        label = { Text("Reason") },
+                        supportingText = { Text("Required, and shown to $nick") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                if (action == ModAction.IpBan) {
+                    Text(
+                        "An IP ban also blocks everyone else on the same connection.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !needsReason || reason.isNotBlank(),
+                onClick = {
+                    val command = when (action) {
+                        ModAction.Mute -> "/mute $nick $duration"
+                        ModAction.Ban -> "/ban $nick $duration ${reason.trim()}"
+                        ModAction.IpBan -> "/ipban $nick $duration ${reason.trim()}"
+                    }
+                    onConfirm(command)
+                },
+            ) { Text(summary, color = if (action == ModAction.Mute) Color.Unspecified else MaterialTheme.colorScheme.error) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/** Long-press on a message. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MessageMenuSheet(
+    line: ChatLine.User,
+    me: ChatUser?,
+    spotlit: Boolean,
+    onReply: () -> Unit,
+    onUser: () -> Unit,
+    onSpotlight: () -> Unit,
+    onRemoveSpotlight: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // Spotlights are keyed by the message hash, which only confirmed chat messages have
+    val canSpotlight = me?.isModerator == true && line.hash.isNotEmpty() && !line.pending && !line.whisper && !line.historical
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Text(
+            "${line.user.nick}: ${line.raw}",
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+        HorizontalDivider()
+        MenuRow("Reply") { onReply(); onDismiss() }
+        MenuRow("Copy message") {
+            context.getSystemService(android.content.ClipboardManager::class.java)
+                .setPrimaryClip(android.content.ClipData.newPlainText("Chat message", line.raw))
+            onDismiss()
+        }
+        MenuRow("About ${line.user.nick}") { onUser(); onDismiss() }
+        if (canSpotlight) {
+            if (spotlit) {
+                MenuRow("Remove spotlight") { onRemoveSpotlight(); onDismiss() }
+            } else {
+                MenuRow("Spotlight message") { onSpotlight(); onDismiss() }
+            }
+        }
+        Spacer(Modifier.padding(12.dp))
+    }
+}
+
+@Composable
+private fun MenuRow(label: String, onClick: () -> Unit) {
+    Text(
+        label,
+        style = MaterialTheme.typography.bodyLarge,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+    )
 }
