@@ -134,8 +134,21 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
     private var qualityPickedByHand = false
 
     var lowLatency: Boolean = true
+
+    /** "Block ads": whether streams' playlist filters (Twitch ad stripping) run, refreshes included. */
+    var blockAds: Boolean = true
+        set(value) {
+            field = value
+            _current.value?.let {
+                currentRewriter = rewriterFor(it)
+                AdBreakMonitor.claim(currentRewriter)
+            }
+        }
+
     private var retryJob: Job? = null
+    private var stallJob: Job? = null
     private var retries = 0
+    private var behindLiveRetried = false
 
     init {
         if (io.github.jordanwoodson.tinyscreen.BuildConfig.DEBUG) {
@@ -151,18 +164,43 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_READY) retries = 0
+                if (playbackState == Player.STATE_READY) {
+                    retries = 0
+                    behindLiveRetried = false
+                }
+                stallJob?.cancel()
+                if (playbackState == Player.STATE_BUFFERING) stallJob = scope.launch { watchForGapStall() }
             }
         })
     }
+
+    /**
+     * A Twitch ad break the filter couldn't swap out plays as EXT-X-GAP segments. Media3 waits at the
+     * start of the gap until real segments follow, with gap "data" buffered ahead of it, and stops
+     * loading once that reaches 50 s, so a long break would leave it waiting for good. Keep it at the
+     * live edge instead; once the break ends, playback carries on from there.
+     */
+    private suspend fun watchForGapStall() {
+        while (true) {
+            delay(GAP_STALL_MS)
+            if (player.playbackState != Player.STATE_BUFFERING) return
+            val ahead = player.bufferedPosition - player.currentPosition
+            if (player.isCurrentMediaItemLive && player.playWhenReady && ahead >= GAP_AHEAD_MS) {
+                player.seekToDefaultPosition()
+            }
+        }
+    }
+
+    private fun rewriterFor(stream: ResolvedStream): PlaylistRewriter? = stream.rewriter?.takeIf { blockAds }
 
     /** [keepQuality] keeps a hand-picked quality, for refreshes of the same stream. */
     fun play(stream: ResolvedStream, playWhenReady: Boolean = true, keepQuality: Boolean = false) {
         retryJob?.cancel()
         retries = 0
-        AdBreakMonitor.set(false)
+        behindLiveRetried = false
         currentHeaders = stream.headers
-        currentRewriter = stream.rewriter
+        currentRewriter = rewriterFor(stream)
+        AdBreakMonitor.claim(currentRewriter)
         _current.value = stream
         if (!keepQuality) {
             qualityPickedByHand = false
@@ -177,6 +215,7 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
 
     fun stop() {
         retryJob?.cancel()
+        AdBreakMonitor.claim(null)
         player.stop()
         player.clearMediaItems()
         _current.value = null
@@ -214,8 +253,9 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
                 .setPlaylistTrackerFactory { factory, policy, parserFactory, cmcd, executor ->
                     DefaultHlsPlaylistTracker(
                         factory, policy, parserFactory, cmcd,
-                        // Stitched-ad stripping can hold a live playlist still for a whole ad break
-                        40.0,
+                        // Swapping between Twitch backup playlists can briefly repeat one; elsewhere
+                        // a frozen playlist should be retried promptly
+                        if (rewriterFor(stream) != null) 10.0 else DefaultHlsPlaylistTracker.DEFAULT_PLAYLIST_STUCK_TARGET_DURATION_COEFFICIENT,
                         executor,
                     )
                 }
@@ -235,6 +275,14 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
 
     private fun recover(error: PlaybackException) {
         val stream = _current.value ?: return
+        if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW && stream.isLive && !behindLiveRetried) {
+            // Falling behind the live window isn't a failure: back to the live edge straight away
+            behindLiveRetried = true
+            retryJob?.cancel()
+            player.seekToDefaultPosition()
+            player.prepare()
+            return
+        }
         if (retries >= 6) return
         retries++
         retryJob?.cancel()
@@ -383,5 +431,7 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope) {
 
     private companion object {
         const val TAG = "PlayerHolder"
+        const val GAP_STALL_MS = 6_000L
+        const val GAP_AHEAD_MS = 4_000L
     }
 }

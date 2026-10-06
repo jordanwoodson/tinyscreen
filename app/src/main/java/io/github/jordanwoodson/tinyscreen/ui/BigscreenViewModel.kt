@@ -117,6 +117,10 @@ class BigscreenViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             settings.map { it.lowLatency }.distinctUntilChanged().collect { player.lowLatency = it }
         }
+        viewModelScope.launch {
+            // "Block ads" off plays Twitch playlists untouched
+            settings.map { it.adblock }.distinctUntilChanged().collect { player.blockAds = it }
+        }
     }
 
     private fun pickPlatform(streams: List<StreamEntry>, current: String?, pref: PlatformPreference): String {
@@ -158,8 +162,7 @@ class BigscreenViewModel(app: Application) : AndroidViewModel(app) {
             val stream = result.getOrNull()
             when {
                 stream != null -> {
-                    // "Block ads" off: play Twitch playlists untouched
-                    player.play(if (settings.value.adblock) stream else stream.copy(rewriter = null))
+                    player.play(stream)
                     _playback.value = Playback.Native(embed, stream)
                 }
                 result.exceptionOrNull() is StreamOfflineException -> {
