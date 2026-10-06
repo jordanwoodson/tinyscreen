@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import io.github.jordanwoodson.tinyscreen.TinyscreenApp
 import io.github.jordanwoodson.tinyscreen.net.Http
+import io.github.jordanwoodson.tinyscreen.net.isDestinyHost
 import io.github.jordanwoodson.tinyscreen.web.createWebView
 import kotlinx.coroutines.launch
 
@@ -62,7 +63,7 @@ fun LoginScreen(onDone: () -> Unit) {
                         null,
                     )
                 }
-                val onDgg = uri.host?.endsWith("destiny.gg") == true
+                val onDgg = isDestinyHost(uri.host)
                 val path = uri.path.orEmpty()
                 if (onDgg && !path.startsWith("/login") && !path.startsWith("/auth") && !path.startsWith("/register")) {
                     status = "Checking session…"

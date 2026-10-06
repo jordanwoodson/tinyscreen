@@ -11,7 +11,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import io.github.jordanwoodson.tinyscreen.TinyscreenApp
+import io.github.jordanwoodson.tinyscreen.net.isDestinyHost
 import io.github.jordanwoodson.tinyscreen.settings.AppSettings
 import io.github.jordanwoodson.tinyscreen.stream.Embed
 import io.github.jordanwoodson.tinyscreen.stream.LinkParser
@@ -30,17 +33,21 @@ fun ChatHost(
     val graph = (LocalContext.current.applicationContext as TinyscreenApp).graph
     if (settings.webChat) {
         LaunchedEffect(Unit) { graph.chat.stop() }
-        WebChat(adblock = settings.adblock, onOpenEmbed = onOpenEmbed, onOpenUrl = onOpenUrl, modifier = modifier)
+        WebChat(onOpenEmbed = onOpenEmbed, onOpenUrl = onOpenUrl, modifier = modifier)
     } else {
         NativeChat(settings, onOpenEmbed, onOpenUrl, onLogin, onWhispers, modifier)
     }
 }
 
+/** Origins allowed to talk to the app through the web chat's `Tinyscreen` bridge. */
+private val CHAT_ORIGINS = setOf("https://www.destiny.gg", "https://destiny.gg")
+
 @Composable
-private fun WebChat(adblock: Boolean, onOpenEmbed: (Embed) -> Unit, onOpenUrl: (String) -> Unit, modifier: Modifier) {
+private fun WebChat(onOpenEmbed: (Embed) -> Unit, onOpenUrl: (String) -> Unit, modifier: Modifier) {
     val context = LocalContext.current
+    val graph = (context.applicationContext as TinyscreenApp).graph
     val route: (Uri) -> Boolean = route@{ uri ->
-        val onDgg = uri.host?.endsWith("destiny.gg") == true
+        val onDgg = isDestinyHost(uri.host)
         if (onDgg && uri.path?.startsWith("/embed/chat") == true) return@route false
         val embed = if (onDgg && uri.path?.startsWith("/bigscreen") == true) uri.fragment?.let { Embed.fromHash("#$it") } else null
         when {
@@ -52,12 +59,12 @@ private fun WebChat(adblock: Boolean, onOpenEmbed: (Embed) -> Unit, onOpenUrl: (
     val webView = remember {
         createWebView(
             context,
-            adblock = { adblock },
+            adblock = { graph.settings.settings.value.adblock },
             onNavigate = route,
             onPageFinished = { view, _ ->
                 // "/embed <link>" changes the chat page's own hash when it isn't inside bigscreen
                 view.evaluateJavascript(
-                    "window.addEventListener('hashchange',function(){Tinyscreen.hash(location.hash)});",
+                    "window.addEventListener('hashchange',function(){if(window.Tinyscreen)Tinyscreen.postMessage(location.hash)});",
                     null,
                 )
             },
@@ -80,12 +87,15 @@ private fun WebChat(adblock: Boolean, onOpenEmbed: (Embed) -> Unit, onOpenUrl: (
         ).apply {
             settings.setSupportMultipleWindows(true)
             settings.javaScriptCanOpenWindowsAutomatically = true
-            addJavascriptInterface(object {
-                @android.webkit.JavascriptInterface
-                fun hash(hash: String) {
-                    Embed.fromHash(hash)?.let { e -> post { onOpenEmbed(e) } }
+            // Only destiny.gg's chat page itself gets the bridge: not other sites, and not frames inside it
+            // (embeds, link previews), which could otherwise change what's playing
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+                WebViewCompat.addWebMessageListener(this, "Tinyscreen", CHAT_ORIGINS) { _, message, origin, isMainFrame, _ ->
+                    if (isMainFrame && isDestinyHost(origin.host)) {
+                        message.data?.let(Embed::fromHash)?.let(onOpenEmbed)
+                    }
                 }
-            }, "Tinyscreen")
+            }
             loadUrl("https://www.destiny.gg/embed/chat?follow=%2Fbigscreen")
         }
     }

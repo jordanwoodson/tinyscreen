@@ -308,12 +308,29 @@ fun WebEmbedPlayer(holder: WebEmbedHolder, modifier: Modifier = Modifier) {
     )
 }
 
-private fun iframeHtml(src: String): String {
-    val safe = src.replace("\"", "%22").replace("<", "%3C").replace(">", "%3E")
+/**
+ * The page the web player loads: [src] in a full-size iframe. [src] is escaped for the attribute it
+ * sits in, and anything but an https player is replaced with a blank page.
+ */
+internal fun iframeHtml(src: String): String {
+    val safe = if (src.startsWith("https://", ignoreCase = true)) escapeAttribute(src) else "about:blank"
     return """
         <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
         <style>html,body{margin:0;height:100%;background:#000;overflow:hidden}iframe{border:0;width:100%;height:100%}</style>
         </head><body><iframe src="$safe" allow="autoplay; fullscreen; encrypted-media; picture-in-picture; clipboard-write"
         allowfullscreen referrerpolicy="origin"></iframe></body></html>
     """.trimIndent()
+}
+
+private fun escapeAttribute(value: String): String = buildString(value.length) {
+    for (c in value) {
+        when (c) {
+            '&' -> append("&amp;")
+            '"' -> append("&quot;")
+            '\'' -> append("&#39;")
+            '<' -> append("&lt;")
+            '>' -> append("&gt;")
+            else -> append(c)
+        }
+    }
 }

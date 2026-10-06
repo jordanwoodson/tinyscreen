@@ -73,14 +73,14 @@ object WebViewCookieJar : CookieJar {
     }
 
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-        if (!url.host.endsWith("destiny.gg")) return
+        if (!isDestinyHost(url.host)) return
         val target = url.toString()
         cookies.forEach { manager.setCookie(target, it.toString()) }
         manager.flush()
     }
 
     override fun loadForRequest(url: HttpUrl): List<Cookie> {
-        if (!url.host.endsWith("destiny.gg")) return emptyList()
+        if (!isDestinyHost(url.host)) return emptyList()
         val header = manager.getCookie(url.toString()) ?: return emptyList()
         return header.split(";").mapNotNull { Cookie.parse(url, it.trim()) }
     }
@@ -89,5 +89,23 @@ object WebViewCookieJar : CookieJar {
 
     fun clearAll(onDone: () -> Unit = {}) {
         manager.removeAllCookies { manager.flush(); onDone() }
+    }
+
+    /**
+     * Signs out of destiny.gg alone: expires its cookies (host-only and domain-wide, path `/`) and keeps
+     * every other site's, such as Kick's or Twitch's in their web chats.
+     */
+    fun clearDestinyGg(onDone: () -> Unit = {}) {
+        for (url in listOf("https://www.destiny.gg", "https://destiny.gg")) {
+            val names = manager.getCookie(url).orEmpty().split(";")
+                .map { it.substringBefore('=').trim() }
+                .filter { it.isNotEmpty() }
+            names.forEach { name ->
+                manager.setCookie(url, "$name=; Max-Age=0; Path=/; Secure")
+                manager.setCookie(url, "$name=; Max-Age=0; Path=/; Secure; Domain=.destiny.gg")
+            }
+        }
+        manager.flush()
+        onDone()
     }
 }
