@@ -64,10 +64,52 @@ Every push to `main` builds a signed APK and publishes it as a GitHub release
 
 ```sh
 ./gradlew :app:testDebugUnitTest :app:assembleDebug     # debug build (app id …tinyscreen.debug)
-./gradlew :app:assembleRelease                          # needs key.properties, see below
+./gradlew :app:lintRelease                              # lint, as CI runs it
+./gradlew :app:assembleRelease                          # minified release; needs key.properties, see below
 ```
 
 JDK 21 and the Android SDK (platform 36) are required. Release signing reads `key.properties`
 (`storeFile`, `keyAlias`, `storePassword`, `keyPassword`); without it, local release builds use the
 debug key. CI writes it from the `KEYSTORE_*` Actions secrets. Never change the release key: Android
-only installs updates signed with the same certificate.
+only installs updates signed with the same certificate. Keep an offline backup of the keystore and
+its passwords: Actions secrets can't be read back, and without the key every phone would have to
+uninstall the app to update it.
+
+Lint findings that predate the lint step are in `app/lint-baseline.xml`; a new lint error fails the
+build. After fixing old findings, regenerate it with `./gradlew :app:updateLintBaseline`.
+
+### Smoke-testing the release build
+
+The release build is shrunk and obfuscated by R8, which can break code the debug build runs fine.
+To check a release APK on a device or emulator:
+
+```sh
+./gradlew :app:assembleRelease
+scripts/smoke-test-release.sh -s emulator-5554     # serial from `adb devices -l`
+```
+
+It installs `app/build/outputs/apk/release/app-release.apk` (or the APK you pass), launches the
+app, opens a YouTube embed, and fails if the app crashed, stopped responding, or logged an exception
+R8 typically causes. Logcat and a screenshot are saved in `app/build/smoke-test/`. A locally built
+APK is signed with the debug key, so it can't replace the CI release on a phone; `--replace`
+uninstalls the installed copy first, which deletes its data. `-h` lists the options.
+
+## Releases
+
+- Every push to `main` that touches `app/`, `gradle/`, the Gradle scripts or the release workflow
+  publishes a release; running the workflow by hand only publishes from `main`. Pull requests run
+  the tests, lint and a release build (`.github/workflows/check.yml`) but publish nothing.
+- Versions are `1.0.N`, counting up from the newest tag (`scripts/next-version.sh`, which also
+  prints the next version when run locally). The version code is `MAJOR×1,000,000 + MINOR×1,000 + N`,
+  so 1.0.5 is 1000005, and moving to 1.1.0 (change `VERSION_LINE` in the script) still goes up.
+  Releases 1.0.1–1.0.4 used codes 1–4. Don't delete release tags: the next release would reuse the
+  number.
+- Release notes are the commit subjects since the previous release.
+- The build job has a read-only token; only the publish job can create the tag and release. The
+  keystore exists on the runner only while the signing build runs. Actions are pinned to commit
+  SHAs, which Renovate keeps current.
+- Each run keeps the R8 mapping (`r8-mapping-v1.0.N`) as a workflow artifact for 90 days. To read
+  a stack trace from a release: `retrace mapping.txt stacktrace.txt` (from the Android SDK's
+  `cmdline-tools`).
+- Dependency updates come from Renovate (`renovate.json`) as weekly grouped PRs. OkHttp stays on
+  4.x because 5.x needs compileSdk 37.
