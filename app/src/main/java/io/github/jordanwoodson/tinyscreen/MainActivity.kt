@@ -146,8 +146,10 @@ class MainActivity : ComponentActivity(), HostActions {
 
     override fun onStart() {
         super.onStart()
-        // Binding a controller lets the session service own the media notification
+        // Binding a controller lets the session service own the media notification. It's released in
+        // onStop: once playing, the service keeps itself running in the foreground without us.
         val token = SessionToken(this, ComponentName(this, PlaybackService::class.java))
+        controllerFuture?.let { MediaController.releaseFuture(it) }
         controllerFuture = MediaController.Builder(this, token).buildAsync()
         orientationListener?.takeIf { it.canDetectOrientation() }?.enable()
         webEmbed.onForeground()
@@ -164,10 +166,11 @@ class MainActivity : ComponentActivity(), HostActions {
         }
         // A web player has no media notification to stop it from, so it never plays in the background
         if (!isInPictureInPictureMode && !isChangingConfigurations) webEmbed.onBackground()
+        controllerFuture?.let { MediaController.releaseFuture(it) }
+        controllerFuture = null
     }
 
     override fun onDestroy() {
-        controllerFuture?.let { MediaController.releaseFuture(it) }
         webEmbed.detach(this)
         graph.player.player.removeListener(playerListener)
         removeOnPictureInPictureModeChangedListener(pipListener)
