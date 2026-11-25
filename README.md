@@ -78,8 +78,8 @@ App changes pushed to `main` build a signed APK and publish it as a GitHub relea
 
 From a video, choose **Share → Tinyscreen** to play it. This also works when a browser or platform app
 already handles the link. For supported bigscreen links on Android 12 and later, open **Tinyscreen →
-Settings → Open supported links**, enable **Open supported links**, and select the destiny.gg addresses
-Android offers.
+Settings → Open supported links**. On Android 16, choose **In the app → Add link** and select the
+destiny.gg addresses. Other Android versions may label the switch **Open supported links**.
 
 ## Building
 
