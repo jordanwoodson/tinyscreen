@@ -41,6 +41,16 @@ class ChatNotifications(
 
     @Volatile private var inForeground = false
 
+    @Volatile var inPip = false
+    private val away get() = !inForeground || inPip
+
+    @Synchronized
+    private fun deliver(account: Long, alert: ChatAlert, me: String?) {
+        if (!away || account != chat.accountGeneration || prefs.getString(ChatRepository.PREF_NICK, null) != me) return
+        notifier.show(alert, me)
+        remember(alert)
+    }
+
     fun start() {
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
@@ -59,15 +69,20 @@ class ChatNotifications(
             }
         })
         scope.launch {
-            chat.alerts.collect { alert ->
-                if (inForeground) return@collect
-                notifier.show(alert, chat.me.value?.nick)
-                remember(alert)
+            chat.alerts.collect { (account, alert) ->
+                deliver(account, alert, chat.me.value?.nick)
             }
         }
         scope.launch {
-            chat.openConversation.filterNotNull().collect { notifier.clearWhisper(it) }
+            chat.visibleConversation.filterNotNull().collect { notifier.clearWhisper(it) }
         }
+    }
+
+    @Synchronized
+    fun clearAccount() {
+        JOB_IDS.forEach { jobs.cancel(it) }
+        notifier.clearAccount()
+        prefs.edit { remove(KEY_AWAY_SINCE); remove(KEY_WHISPERS_SINCE); remove(KEY_MENTIONS_SINCE) }
     }
 
     private fun remember(alert: ChatAlert) {
@@ -109,6 +124,7 @@ class ChatNotifications(
     }
 
     private suspend fun pollWhispers(s: AppSettings, me: String) {
+        val account = chat.accountGeneration
         val unread = ChatApi.unreadCount() ?: return
         if (unread == 0) return
         val since = prefs.getLong(KEY_WHISPERS_SINCE, 0)
@@ -116,11 +132,11 @@ class ChatNotifications(
         val fresh = ChatApi.conversations()
             .filter { it.unread > 0 && !it.lastMessageFromMe && it.timestamp > since && it.username.lowercase() !in ignored }
             .sortedBy { it.timestamp }
-        fresh.forEach { notifier.show(ChatAlert.Whisper(it.username, it.lastMessage, it.timestamp), me) }
-        fresh.maxOfOrNull { it.timestamp }?.let { prefs.edit { putLong(KEY_WHISPERS_SINCE, it) } }
+        fresh.forEach { deliver(account, ChatAlert.Whisper(it.username, it.lastMessage, it.timestamp), me) }
     }
 
     private suspend fun pollMentions(s: AppSettings, me: String) {
+        val account = chat.accountGeneration
         val since = prefs.getLong(KEY_MENTIONS_SINCE, 0)
         val filter = ChatFilter.from(s, ChatUser(nick = me))
         val fresh = ChatApi.mentions(me, 10)
@@ -132,8 +148,7 @@ class ChatNotifications(
                 !filter.hidesText(line) && filter.highlights.matches(line)
             }
             .sortedBy { it.timestamp }
-        fresh.forEach { notifier.show(ChatAlert.Mention(it.nick, it.text, it.timestamp), me) }
-        fresh.maxOfOrNull { it.timestamp }?.let { prefs.edit { putLong(KEY_MENTIONS_SINCE, it) } }
+        fresh.forEach { deliver(account, ChatAlert.Mention(it.nick, it.text, it.timestamp), me) }
     }
 
     companion object {

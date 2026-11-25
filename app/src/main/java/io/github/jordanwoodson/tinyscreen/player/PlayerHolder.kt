@@ -43,6 +43,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -144,6 +145,8 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope, private 
         .setSeekForwardIncrementMs(10_000)
         .build()
 
+    val languages = LanguageTracks(appContext, player)
+
     private val _current = MutableStateFlow<ResolvedStream?>(null)
     val current: StateFlow<ResolvedStream?> = _current.asStateFlow()
 
@@ -188,6 +191,9 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope, private 
                 AdBreakMonitor.claim(adFilterFor(it))
             }
         }
+
+    private val _liveSourceFailures = MutableSharedFlow<ResolvedStream>(extraBufferCapacity = 1)
+    val liveSourceFailures = _liveSourceFailures.asSharedFlow()
 
     private var retryJob: Job? = null
     private var upgradeJob: Job? = null
@@ -277,6 +283,7 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope, private 
             _surfaceKey.value++
             // A VOD's speed doesn't carry into live, where the speed control is usually hidden
             if (stream.isLive) player.setPlaybackSpeed(1f)
+            languages.clearStreamOverrides()
         }
         val source = buildSource(stream)
         player.setMediaSource(source, stream.startPositionMs)
@@ -390,6 +397,7 @@ class PlayerHolder(context: Context, private val scope: CoroutineScope, private 
             return
         }
         retries++
+        if (stream.isLive && online.value && retries >= 3) _liveSourceFailures.tryEmit(stream)
         _recovery.value = Recovery.Retrying
         val wait = if (stream.isLive) (1_000L shl (retries - 1).coerceAtMost(5)).coerceAtMost(30_000) else 1_000L * retries
         retryJob = scope.launch {

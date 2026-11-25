@@ -68,6 +68,7 @@ class ChatRepository(
     private val appScope: CoroutineScope,
     private val settingsRepo: SettingsRepository,
     val assets: ChatAssets,
+    private val onAccountReset: () -> Unit = {},
 ) {
     private val dispatcher = Dispatchers.Default.limitedParallelism(1)
     // A bug in one handler logs instead of taking the whole app down
@@ -152,8 +153,10 @@ class ChatRepository(
     val loginRequests: SharedFlow<Unit> = _loginRequests.asSharedFlow()
 
     /** Incoming whispers and highlights, for notifications. */
-    private val _alerts = MutableSharedFlow<ChatAlert>(extraBufferCapacity = 16)
-    val alerts: SharedFlow<ChatAlert> = _alerts.asSharedFlow()
+    @Volatile var accountGeneration = 0L
+        private set
+    private val _alerts = MutableSharedFlow<Pair<Long, ChatAlert>>(extraBufferCapacity = 16)
+    val alerts: SharedFlow<Pair<Long, ChatAlert>> = _alerts.asSharedFlow()
 
     val sentHistory = ArrayDeque<String>()
     private val highlighters = ArrayDeque<String>()
@@ -190,7 +193,7 @@ class ChatRepository(
         .conflate()
         .map { rowBuilder.build(it.lines, it.filter, it.censors, it.watching) }
         .flowOn(Dispatchers.Default)
-        .stateIn(appScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+        .stateIn(appScope, SharingStarted.WhileSubscribed(replayExpirationMillis = 0), emptyList())
 
     private class RowInputs(val lines: List<ChatLine>, val filter: ChatFilter, val censors: Censors, val watching: Set<String>?)
 
@@ -398,7 +401,9 @@ class ChatRepository(
             "PING" -> socket?.send("PONG $rawPayload")
             "PONG" -> Unit
             "ME" -> {
-                val user = o?.let { parseUser(it) }
+                val user = o?.let { parseUser(it) }?.takeIf { it.nick.isNotBlank() }
+                val previous = _me.value?.key ?: prefs.getString(PREF_NICK, null)?.lowercase()
+                if (previous != null && previous != user?.key) resetAccount()
                 _me.value = user
                 if (user != null) {
                     // Background whisper and mention checks run without a socket, so remember who we are
@@ -603,7 +608,7 @@ class ChatRepository(
         }
         // The same rules as the blue highlight in the list, so ignored users and links don't notify
         if (!history && settings.notifyHighlights && !filter.hidesText(line) && filter.highlights.matches(line)) {
-            _alerts.tryEmit(ChatAlert.Mention(user.nick, text, ts))
+            _alerts.tryEmit(accountGeneration to ChatAlert.Mention(user.nick, text, ts))
         }
     }
 
@@ -629,19 +634,25 @@ class ChatRepository(
         val id = o["messageid"].long()
         if (from.lowercase() in settings.ignoredUsers.map { it.lowercase() }) return
         lastWhisperer = from
-        val open = _openConversation.value
-        if (open != null && open.equals(from, ignoreCase = true)) {
+        val reading = visibleConversation.value.equals(from, ignoreCase = true) &&
+            _openConversation.value.equals(from, ignoreCase = true)
+        if (reading) {
             _conversationMessages.value = _conversationMessages.value + WhisperMessage(id, from, _me.value?.nick.orEmpty(), text, ts)
-            id?.let { appScope.launch { runCatching { ChatApi.markRead(it) } } }
+            val account = accountGeneration
+            if (id != null) scope.launch {
+                if (account == accountGeneration && visibleConversation.value.equals(from, true)) {
+                    runCatching { ChatApi.markRead(id) }
+                }
+            }
         } else {
             _unreadWhispers.value = _unreadWhispers.value + 1
-            if (!history && settings.notifyWhispers) _alerts.tryEmit(ChatAlert.Whisper(from, text, ts))
+            if (!history && settings.notifyWhispers) _alerts.tryEmit(accountGeneration to ChatAlert.Whisper(from, text, ts, id))
         }
         // Bump the conversation to the top
         val existing = _conversations.value.firstOrNull { it.username.equals(from, ignoreCase = true) }
         val updated = Conversation(
             existing?.userId, from, text, ts,
-            (existing?.unread ?: 0) + if (open.equals(from, ignoreCase = true)) 0 else 1,
+            (existing?.unread ?: 0) + if (reading) 0 else 1,
             lastMessageFromMe = false,
         )
         _conversations.value = listOf(updated) + _conversations.value.filterNot { it.username.equals(from, ignoreCase = true) }
@@ -1030,39 +1041,53 @@ class ChatRepository(
 
     // --- Whispers ---
 
-    suspend fun refreshWhispers() {
-        if (_me.value == null) return
-        ChatApi.unreadCount()?.let { _unreadWhispers.value = it }
-        runCatching { ChatApi.conversations() }.onSuccess { _conversations.value = it }
+    suspend fun refreshWhispers() = withContext(dispatcher) {
+        if (_me.value == null) return@withContext
+        val account = accountGeneration
+        ChatApi.unreadCount()?.let { if (account == accountGeneration) _unreadWhispers.value = it }
+        if (account == accountGeneration) {
+            runCatching { ChatApi.conversations() }.onSuccess { if (account == accountGeneration) _conversations.value = it }
+        }
     }
 
-    suspend fun searchConversations(query: String) {
-        runCatching { ChatApi.conversations(query) }.onSuccess { _conversations.value = it }
+    suspend fun searchConversations(query: String) = withContext(dispatcher) {
+        if (_me.value == null) return@withContext
+        val account = accountGeneration
+        runCatching { ChatApi.conversations(query) }.onSuccess { if (account == accountGeneration) _conversations.value = it }
+        Unit
     }
 
     private var inboxJob: Job? = null
+    private val _visibleConversation = MutableStateFlow<String?>(null)
+    val visibleConversation = _visibleConversation.asStateFlow()
 
     fun openWhisper(nick: String?) {
         scope.launch {
+            if (_openConversation.value == nick) return@launch
+            inboxJob?.cancel()
+            _visibleConversation.value = null
             _openConversation.value = nick
             _conversationMessages.value = emptyList()
             _whisperNotice.value = null
+        }
+    }
+
+    /** The inbox endpoint marks messages read, so only fetch it while its conversation is visible. */
+    fun setVisibleConversation(nick: String?) {
+        scope.launch {
+            val visible = nick?.takeIf { it == _openConversation.value && _me.value != null }
+            if (_visibleConversation.value == visible) return@launch
+            _visibleConversation.value = visible
             inboxJob?.cancel()
-            inboxJob = appScope.launch {
-                if (nick != null) {
-                    // Fetching the inbox marks it read on the server
-                    val msgs = runCatching { ChatApi.inbox(nick) }.getOrNull()
-                    withContext(dispatcher) {
-                        // Opening a second conversation quickly mustn't show the first one's messages
-                        if (msgs == null || !_openConversation.value.equals(nick, ignoreCase = true)) return@withContext
-                        // Keep whispers that arrived while it loaded, and any still being sent
-                        val loaded = msgs.mapNotNullTo(HashSet()) { it.id }
-                        _conversationMessages.value = msgs + _conversationMessages.value.filter { it.id == null || it.id !in loaded }
-                        _conversations.value = _conversations.value.map { if (it.username.equals(nick, ignoreCase = true)) it.copy(unread = 0) else it }
-                    }
-                }
-                // The server's count rather than adding and subtracting, which drifted
-                ChatApi.unreadCount()?.let { _unreadWhispers.value = it }
+            if (visible == null) return@launch
+            val account = accountGeneration
+            inboxJob = scope.launch {
+                val messages = runCatching { ChatApi.inbox(visible) }.getOrNull() ?: return@launch
+                if (account != accountGeneration || visible != visibleConversation.value) return@launch
+                val loaded = messages.mapNotNullTo(HashSet()) { it.id }
+                _conversationMessages.value = messages + _conversationMessages.value.filter { it.id == null || it.id !in loaded }
+                _conversations.value = _conversations.value.map { if (it.username.equals(visible, true)) it.copy(unread = 0) else it }
+                ChatApi.unreadCount()?.let { if (account == accountGeneration) _unreadWhispers.value = it }
             }
         }
     }
@@ -1432,27 +1457,47 @@ class ChatRepository(
         return cookies.contains("sid=") || cookies.contains("rememberme=")
     }
 
+    private fun resetAccount() {
+        accountGeneration++
+        inboxJob?.cancel()
+        _me.value = null
+        _lines.value = _lines.value.filterNot { it is ChatLine.User && it.whisper }
+        _conversations.value = emptyList()
+        _unreadWhispers.value = 0
+        _visibleConversation.value = null
+        _openConversation.value = null
+        _conversationMessages.value = emptyList()
+        _whisperNotice.value = null
+        pendingWhispers.clear()
+        sentHistory.clear()
+        lastWhisperer = null
+        lastSendWasWhisper = false
+        _muteEndsAt.value = null
+        highlighters.clear()
+        prefs.edit().remove(PREF_NICK).remove("pre_login_text").apply()
+        onAccountReset()
+    }
+
     fun logout() {
+        val url = "https://www.destiny.gg/logout"
+        val oldCookies = WebViewCookieJar.cookieHeader(url)
         appScope.launch {
-            withContext(Dispatchers.IO) {
-                runCatching { Http.getString("https://www.destiny.gg/logout") }
-            }
-            // Only destiny.gg's cookies: the Kick and Twitch logins live in the same store
-            WebViewCookieJar.clearDestinyGg()
             withContext(dispatcher) {
-                _me.value = null
-                _conversations.value = emptyList()
-                _unreadWhispers.value = 0
-                _openConversation.value = null
-                _conversationMessages.value = emptyList()
-                _whisperNotice.value = null
-                pendingWhispers.clear()
-                lastWhisperer = null
-                _muteEndsAt.value = null
-                highlighters.clear()
-                prefs.edit().remove(PREF_NICK).remove("pre_login_text").apply()
+                val old = socket
+                socket = null
+                old?.cancel()
+                reconnectJob?.cancel()
+                resetAccount()
             }
-            reconnect()
+            WebViewCookieJar.clearDestinyGg { reconnect() }
+            // Server logout uses only the old session. Its response must never change a later login.
+            if (!oldCookies.isNullOrBlank()) withContext(Dispatchers.IO) {
+                runCatching {
+                    val client = Http.client.newBuilder().cookieJar(okhttp3.CookieJar.NO_COOKIES).followRedirects(false).build()
+                    val request = Request.Builder().url(url).header("Cookie", oldCookies).build()
+                    client.newCall(request).execute().close()
+                }
+            }
         }
     }
 

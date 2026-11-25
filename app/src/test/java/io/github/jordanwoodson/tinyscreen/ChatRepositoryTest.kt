@@ -79,6 +79,29 @@ class ChatRepositoryTest {
     }
 
     @Test
+    fun accountSwitchDropsPrivateRowsAndKeepsPublicChat() = runBlocking {
+        chat.receive("""ME {"id":1,"nick":"First"}""")
+        chat.receive(msg("Alice", "public", 1000))
+        chat.receive("""PRIVMSG {"nick":"Alice","data":"private","timestamp":2000}""")
+        assertTrue(userLines().any { it.whisper })
+        chat.receive("""ME {"id":2,"nick":"Second"}""")
+        assertEquals(listOf("public"), userLines().map { it.raw })
+        assertTrue(chat.conversations.value.isEmpty())
+        assertEquals(0, chat.unreadWhispers.value)
+    }
+
+    @Test
+    fun selectedButHiddenConversationLeavesWhispersUnread() = runBlocking {
+        chat.receive("""ME {"id":1,"nick":"First"}""")
+        chat.openWhisper("Alice")
+        chat.idle()
+        chat.receive("""PRIVMSG {"nick":"Alice","data":"hello","timestamp":1000,"messageid":1}""")
+        assertEquals(1, chat.unreadWhispers.value)
+        assertEquals(1, chat.conversations.value.single().unread)
+        assertTrue(chat.conversationMessages.value.isEmpty())
+    }
+
+    @Test
     fun eventsAreToldApartByTypeAndTime() {
         val a = Json.parseToJsonElement("""{"nick":"Bot","data":"x","timestamp":1}""")
         val b = Json.parseToJsonElement("""{"nick":"Bot","data":"x","timestamp":2}""")

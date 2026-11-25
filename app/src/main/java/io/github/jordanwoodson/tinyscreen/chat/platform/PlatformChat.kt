@@ -81,7 +81,11 @@ object PlatformChats {
         fun add(tab: ChatTab.Platform?) {
             if (tab != null && tab.platform !in options.hidden && tabs.none { it.key == tab.key }) tabs += tab
         }
-        fun lookUp(lookup: ChatLookup): ChatLookupResult? = found[lookup] ?: run { lookups += lookup; null }
+        fun lookUp(lookup: ChatLookup): ChatLookupResult? {
+            val result = found[lookup]
+            if (result?.chatUrl == null) lookups += lookup
+            return result
+        }
 
         PLATFORMS.forEach { platform -> add(destinyTab(platform, info.streams[platform], ::lookUp)) }
         var other: String? = null

@@ -40,8 +40,8 @@ data class Embed(val platform: String, val id: String, val startSeconds: Int? = 
     companion object {
         // Same pattern as the bigscreen page, plus youtube-live which chat also links
         private val HASH = Regex(
-            """^#(kick|kick-vod|twitch|twitch-vod|twitch-clip|youtube|youtube-live|facebook|rumble|vimeo|angelthump)/""" +
-                """([\w\d]{3,64}/videos/\d{10,20}|[\w-]{3,64}/[\da-f-]{36}|[\w-]{3,64}|\w{7,12}/\?pub=\w{3,10})""" +
+            """^#(kick|kick-vod|kick-clip|twitch|twitch-vod|twitch-clip|youtube|youtube-live|facebook|rumble|vimeo|angelthump)/""" +
+                """([\w-]{1,64}/clips/[\w-]{1,128}|[\w\d]{3,64}/videos/\d{10,20}|[\w-]{3,64}/[\da-f-]{36}|[\w-]{3,64}|\w{7,12}/\?pub=\w{3,10})""" +
                 """(?:\?t=(\d+)s?)?(?:$|\?|&)""",
         )
 

@@ -1,7 +1,9 @@
 package io.github.jordanwoodson.tinyscreen.ui
 
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.clickable
@@ -146,6 +148,16 @@ fun SettingsScreen(
             item { Toggle("Background playback", "Keep audio playing when you leave the app", settings.backgroundPlayback) { v -> onChange { it.copy(backgroundPlayback = v) } } }
             item { Toggle("Picture-in-picture on leave", "Shrink the stream into a floating window when you go home", settings.autoPip) { v -> onChange { it.copy(autoPip = v) } } }
             item { Toggle("Block ads", "Strip stitched Twitch ads and block ad/tracker hosts in web views", settings.adblock) { v -> onChange { it.copy(adblock = v) } } }
+
+            item {
+                val intent = Intent(Settings.ACTION_APP_OPEN_BY_DEFAULT_SETTINGS,
+                    Uri.fromParts("package", context.packageName, null))
+                TextButton(onClick = {
+                    try { context.startActivity(intent) } catch (_: ActivityNotFoundException) {
+                        context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, intent.data))
+                    }
+                }) { Text("Open supported links") }
+            }
 
             item { Header("Layout") }
             item { Toggle("Chat on the left", "Landscape layout, like the Swap button", settings.chatOnLeft) { v -> onChange { it.copy(chatOnLeft = v) } } }

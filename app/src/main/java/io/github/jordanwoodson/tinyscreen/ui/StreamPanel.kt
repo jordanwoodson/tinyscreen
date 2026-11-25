@@ -1,5 +1,6 @@
 package io.github.jordanwoodson.tinyscreen.ui
 
+import android.net.Uri
 import androidx.annotation.DrawableRes
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -62,16 +63,19 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import coil3.compose.AsyncImage
 import io.github.jordanwoodson.tinyscreen.R
 import io.github.jordanwoodson.tinyscreen.stream.Embed
 import io.github.jordanwoodson.tinyscreen.stream.LatestVod
 import io.github.jordanwoodson.tinyscreen.stream.Times
 import io.github.jordanwoodson.tinyscreen.stream.TopEmbed
-import kotlinx.coroutines.delay
 import java.text.NumberFormat
 import java.time.Duration
 import java.time.Instant
+import kotlinx.coroutines.delay
 
 enum class BadgeTone(val bg: Color, val fg: Color, val border: Color) {
     Danger(Color(0xFF3B1219), Color(0xFFFF9592), Color(0xFF72232D)),
@@ -111,10 +115,14 @@ fun Badge(text: String, tone: BadgeTone, icon: Int? = null) {
 @Composable
 fun UptimeBadge(start: Instant) {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(start) {
-        while (true) {
-            now = System.currentTimeMillis()
-            delay(1_000)
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val visible = LocalPanelsVisible.current
+    LaunchedEffect(start, visible, lifecycle) {
+        if (visible) lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                now = System.currentTimeMillis()
+                delay(1_000)
+            }
         }
     }
     val secs = Duration.between(start, Instant.ofEpochMilli(now)).seconds.coerceAtLeast(0)
@@ -132,6 +140,7 @@ fun StreamControls(
     resolvedTitle: String?,
     usingWebPlayer: Boolean,
     canTogglePlayer: Boolean,
+    momentUrl: (() -> String?)?,
     onChangePlatform: () -> Unit,
     onCloseEmbed: () -> Unit,
     onOpenUrl: (String) -> Unit,
@@ -209,16 +218,25 @@ fun StreamControls(
                                 onClick = { menu = false; onTogglePlayer() },
                             )
                         }
-                        DropdownMenuItem(
-                            text = { Text("Reload stream") },
-                            leadingIcon = { Icon(Icons.Filled.Refresh, null) },
-                            onClick = { menu = false; onReload() },
-                        )
+                        if (embed.platform != "kick-clip") {
+                            DropdownMenuItem(
+                                text = { Text("Reload stream") },
+                                leadingIcon = { Icon(Icons.Filled.Refresh, null) },
+                                onClick = { menu = false; onReload() },
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text("Share") },
                             leadingIcon = { Icon(Icons.Filled.Share, null) },
                             onClick = { menu = false; onShare(embed.bigscreenUrl) },
                         )
+                        if (momentUrl != null) {
+                            DropdownMenuItem(
+                                text = { Text("Share this moment") },
+                                leadingIcon = { Icon(Icons.Filled.Share, null) },
+                                onClick = { menu = false; momentUrl()?.let(onShare) },
+                            )
+                        }
                         platformPageUrl(embed)?.let { url ->
                             DropdownMenuItem(
                                 text = { Text("Open on ${embed.platformName}") },
@@ -252,6 +270,9 @@ fun StreamControls(
 }
 
 fun platformPageUrl(embed: Embed): String? = when (embed.platform) {
+    "kick-clip" -> embed.id.split("/clips/", limit = 2).takeIf { it.size == 2 }?.let { (channel, clip) ->
+        "https://kick.com/${Uri.encode(channel)}/clips/${Uri.encode(clip)}"
+    }
     "kick" -> "https://kick.com/${embed.id}"
     "kick-vod" -> embed.id.split('/').let { if (it.size == 2) "https://kick.com/${it[0]}/videos/${it[1]}" else null }
     "twitch" -> "https://www.twitch.tv/${embed.id}"

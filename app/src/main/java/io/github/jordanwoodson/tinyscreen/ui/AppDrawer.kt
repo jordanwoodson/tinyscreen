@@ -13,6 +13,7 @@ import androidx.compose.material.icons.automirrored.filled.Login
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.AttachMoney
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Mail
@@ -73,6 +74,7 @@ fun AppDrawer(
     onLogout: () -> Unit,
     onWhispers: () -> Unit,
     onSettings: () -> Unit,
+    onHistory: () -> Unit,
 ) {
     ModalDrawerSheet(Modifier.width(300.dp)) {
         LazyColumn(Modifier.fillMaxHeight()) {
@@ -116,6 +118,15 @@ fun AppDrawer(
                     label = { Text("Big Screen Live") },
                     selected = true,
                     onClick = onBigscreen,
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                )
+            }
+            item {
+                NavigationDrawerItem(
+                    icon = { Icon(Icons.Filled.History, null) },
+                    label = { Text("Continue watching") },
+                    selected = false,
+                    onClick = onHistory,
                     modifier = Modifier.padding(horizontal = 12.dp),
                 )
             }

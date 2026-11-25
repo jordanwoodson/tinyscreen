@@ -11,12 +11,16 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.common.VideoSize
+import io.github.jordanwoodson.tinyscreen.ui.LocalPanelsVisible
 import kotlinx.coroutines.delay
 
 /** Compose-observable snapshot of the player, refreshed by listener events plus a 500 ms ticker. */
@@ -83,17 +87,21 @@ class PlayerUiState(val player: Player) {
 }
 
 @Composable
-fun rememberPlayerUiState(player: Player): PlayerUiState {
+fun rememberPlayerUiState(player: Player, progress: Boolean = true): PlayerUiState {
     val state = remember(player) { PlayerUiState(player) }
     DisposableEffect(player) {
         player.addListener(state.listener)
         state.refreshProgress()
         onDispose { player.removeListener(state.listener) }
     }
-    LaunchedEffect(player) {
-        while (true) {
-            state.refreshProgress()
-            delay(500)
+    val visible = LocalPanelsVisible.current
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(player, visible, progress, lifecycle) {
+        if (visible && progress) lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                state.refreshProgress()
+                delay(500)
+            }
         }
     }
     return state

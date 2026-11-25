@@ -15,6 +15,10 @@ import io.github.jordanwoodson.tinyscreen.stream.StreamEntry
 import io.github.jordanwoodson.tinyscreen.stream.StreamInfo
 import io.github.jordanwoodson.tinyscreen.stream.TopEmbed
 import io.github.jordanwoodson.tinyscreen.ui.Content
+import io.github.jordanwoodson.tinyscreen.stream.playableEntries
+import io.github.jordanwoodson.tinyscreen.stream.liveEmbed
+import io.github.jordanwoodson.tinyscreen.ui.BigscreenViewModel
+import io.github.jordanwoodson.tinyscreen.settings.PlatformPreference
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -52,7 +56,14 @@ class PlatformChatTest {
         val kick = StreamEntry(live = true, id = "https://abc.us-west-2.playback.live-video.net/api/video/v1/x.m3u8", platform = "kick")
         val youtube = StreamEntry(live = true, id = "wIKpoCsSA7E", platform = "youtube")
         val info = StreamInfo(mapOf("youtube" to youtube, "kick" to kick))
-        val content = Content.Live(kick, listOf(kick, youtube), Embed("kick", kick.id!!))
+        val entries = info.playableEntries()
+        val selected = BigscreenViewModel.selectLive(entries, null, PlatformPreference.Auto, emptySet())
+        assertEquals(kick.id, selected.id)
+        val identity = selected.liveEmbed()!!
+        assertEquals(Embed("kick", "destiny"), identity)
+        assertEquals(youtube, BigscreenViewModel.selectLive(entries, null, PlatformPreference.Auto, setOf(identity)))
+        assertEquals(listOf(youtube), StreamInfo(mapOf("kick" to kick.copy(id = ""), "youtube" to youtube)).playableEntries())
+        val content = Content.Live(selected, entries, identity)
         val tabs = PlatformChats.tabs(info, content, emptyMap()).tabs
         assertEquals(
             listOf("dgg", kickChat, "https://www.youtube.com/live_chat?is_popout=1&dark_theme=1&v=wIKpoCsSA7E"),

@@ -32,6 +32,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -46,28 +47,42 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.jordanwoodson.tinyscreen.TinyscreenApp
 import io.github.jordanwoodson.tinyscreen.chat.WhisperState
 import io.github.jordanwoodson.tinyscreen.ui.fromNow
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.time.Instant
 import java.util.Date
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun WhispersScreen(onBack: () -> Unit) {
+fun WhispersScreen(inPip: Boolean, onBack: () -> Unit) {
     val chat = (LocalContext.current.applicationContext as TinyscreenApp).graph.chat
     val open by chat.openConversation.collectAsState()
     val conversations by chat.conversations.collectAsState()
     val me by chat.me.collectAsState()
     val scope = rememberCoroutineScope()
-    var query by remember { mutableStateOf("") }
-    var newNick by remember { mutableStateOf("") }
+    var query by remember(me?.key) { mutableStateOf("") }
+    var newNick by remember(me?.key) { mutableStateOf("") }
 
-    LaunchedEffect(Unit) { chat.refreshWhispers() }
-    LaunchedEffect(query) {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(open, me?.key, inPip, lifecycle) {
+        val observer = LifecycleEventObserver { _, _ ->
+            chat.setVisibleConversation(open.takeIf { !inPip && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) })
+        }
+        lifecycle.addObserver(observer)
+        onDispose {
+            lifecycle.removeObserver(observer)
+            chat.setVisibleConversation(null)
+        }
+    }
+    LaunchedEffect(me?.key) { chat.refreshWhispers() }
+    LaunchedEffect(me?.key, query) {
         delay(300)
         chat.searchConversations(query)
     }
@@ -144,7 +159,7 @@ fun WhispersScreen(onBack: () -> Unit) {
         } else {
             val messages by chat.conversationMessages.collectAsState()
             val notice by chat.whisperNotice.collectAsState()
-            var draft by remember(nick) { mutableStateOf("") }
+            var draft by remember(me?.key, nick) { mutableStateOf("") }
             val listState = rememberLazyListState()
             LaunchedEffect(messages.size) { if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex) }
             Column(Modifier.fillMaxSize().padding(padding).imePadding()) {

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -16,6 +17,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -24,6 +26,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -47,11 +50,23 @@ fun LoginScreen(onDone: () -> Unit) {
     var loading by remember { mutableStateOf(true) }
     var status by remember { mutableStateOf<String?>(null) }
 
+    var rendererLost by remember { mutableStateOf(false) }
+    if (rendererLost) {
+        BackHandler(onBack = onDone)
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column {
+                Button(onClick = { rendererLost = false; loading = true; status = null }) { Text("Reload sign-in page") }
+                TextButton(onClick = onDone) { Text("Close") }
+            }
+        }
+        return
+    }
     val webView = remember {
         createWebView(
             context,
             adblock = { graph.settings.settings.value.adblock },
             userAgent = Http.MOBILE_UA,
+            onRenderProcessGone = { _, _ -> rendererLost = true },
             onPageFinished = { view, url ->
                 loading = false
                 val uri = Uri.parse(url)
@@ -82,7 +97,7 @@ fun LoginScreen(onDone: () -> Unit) {
     }
     DisposableEffect(webView) {
         webView.loadUrl("https://www.destiny.gg/login")
-        onDispose { webView.destroy() }
+        onDispose { if (!rendererLost) webView.destroy() }
     }
     // Back steps back through the sign-in pages (a provider's page, then destiny.gg's) before leaving
     BackHandler { if (webView.canGoBack()) webView.goBack() else onDone() }

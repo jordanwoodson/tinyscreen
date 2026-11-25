@@ -103,6 +103,7 @@ class MainActivity : ComponentActivity(), HostActions {
     private val pipListener = Consumer<PictureInPictureModeChangedInfo> { info ->
         if (inPip.value && !info.isInPictureInPictureMode) leftPipAt = System.currentTimeMillis()
         inPip.value = info.isInPictureInPictureMode
+        graph.chatNotifications.inPip = info.isInPictureInPictureMode
         updateWindowState(resources.configuration)
     }
 

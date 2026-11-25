@@ -20,11 +20,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
@@ -47,7 +47,6 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -61,20 +60,22 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onVisibilityChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.jordanwoodson.tinyscreen.TinyscreenApp
 import io.github.jordanwoodson.tinyscreen.chat.ChatLine
 import io.github.jordanwoodson.tinyscreen.chat.ChatRepository
@@ -83,9 +84,11 @@ import io.github.jordanwoodson.tinyscreen.chat.PaidEvent
 import io.github.jordanwoodson.tinyscreen.chat.PollState
 import io.github.jordanwoodson.tinyscreen.settings.AppSettings
 import io.github.jordanwoodson.tinyscreen.stream.Embed
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import io.github.jordanwoodson.tinyscreen.ui.LocalPanelsVisible
 import java.text.SimpleDateFormat
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.launch
 
 @Composable
 fun NativeChat(
@@ -98,27 +101,30 @@ fun NativeChat(
 ) {
     val graph = (LocalContext.current.applicationContext as TinyscreenApp).graph
     val chat = graph.chat
-    val rows by chat.rows.collectAsState()
-    val me by chat.me.collectAsState()
-    val emotes by chat.assets.emotes.collectAsState()
-    val flairs by chat.assets.flairs.collectAsState()
-    val spotlights by chat.spotlights.collectAsState()
-    val pinned by chat.pinned.collectAsState()
-    val dismissed by chat.dismissedPins.collectAsState()
-    val poll by chat.poll.collectAsState()
-    val events by chat.events.collectAsState()
-    val unread by chat.unreadWhispers.collectAsState()
-    val status by chat.status.collectAsState()
+    var inViewport by remember { mutableStateOf(false) }
+    val visible = inViewport && LocalPanelsVisible.current
+    val displayRows = remember(visible) { if (visible) chat.rows else emptyFlow() }
+    val rows by displayRows.collectAsStateWithLifecycle(initialValue = emptyList())
+    val me by chat.me.collectAsStateWithLifecycle()
+    val emotes by chat.assets.emotes.collectAsStateWithLifecycle()
+    val flairs by chat.assets.flairs.collectAsStateWithLifecycle()
+    val spotlights by chat.spotlights.collectAsStateWithLifecycle()
+    val pinned by chat.pinned.collectAsStateWithLifecycle()
+    val dismissed by chat.dismissedPins.collectAsStateWithLifecycle()
+    val poll by chat.poll.collectAsStateWithLifecycle()
+    val events by chat.events.collectAsStateWithLifecycle()
+    val unread by chat.unreadWhispers.collectAsStateWithLifecycle()
+    val status by chat.status.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
     var input by remember { mutableStateOf(TextFieldValue("")) }
     var focused by rememberSaveable { mutableStateOf<String?>(null) }
-    val watchingFocus by chat.watchingOnly.collectAsState()
+    val watchingFocus by chat.watchingOnly.collectAsStateWithLifecycle()
     var userSheet by rememberSaveable { mutableStateOf<String?>(null) }
     var showUsers by rememberSaveable { mutableStateOf(false) }
     var showEmotes by rememberSaveable { mutableStateOf(false) }
     var expandedEvent by remember { mutableStateOf<PaidEvent?>(null) }
-    var messageMenu by remember { mutableStateOf<ChatLine.User?>(null) }
+    var messageMenu by remember(me?.key) { mutableStateOf<ChatLine.User?>(null) }
 
     LaunchedEffect(Unit) { chat.start() }
     LaunchedEffect(Unit) {
@@ -203,7 +209,7 @@ fun NativeChat(
         }
     }
 
-    Column(modifier.background(ChatColors.Background)) {
+    Column(modifier.onVisibilityChanged(minFractionVisible = 0.01f) { inViewport = it }.background(ChatColors.Background)) {
         if (events.isNotEmpty()) EventBar(events, onClick = { expandedEvent = if (expandedEvent?.uuid == it.uuid) null else it })
         poll?.let { PollPanel(it, onVote = chat::vote, onClose = chat::dismissPoll, fontSize = ctx.fontSize) }
         Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -331,7 +337,7 @@ fun NativeChat(
         )
     }
     if (showUsers) {
-        val users by chat.users.collectAsState()
+        val users by chat.users.collectAsStateWithLifecycle()
         UserListSheet(
             users = users.values.toList(),
             flairs = flairs,
@@ -420,9 +426,9 @@ private fun ChatInput(
     onSend: () -> Unit,
     onLogin: () -> Unit,
 ) {
-    val me by chat.me.collectAsState()
-    val muteEnds by chat.muteEndsAt.collectAsState()
-    val subOnly by chat.subOnly.collectAsState()
+    val me by chat.me.collectAsStateWithLifecycle()
+    val muteEnds by chat.muteEndsAt.collectAsStateWithLifecycle()
+    val subOnly by chat.subOnly.collectAsStateWithLifecycle()
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(muteEnds) {
         while (muteEnds != null && now < muteEnds!!) {
@@ -479,8 +485,8 @@ private fun ChatInput(
 /** Tab-completion strip: emotes first, then recently-seen users, then commands. */
 @Composable
 private fun Autocomplete(input: TextFieldValue, chat: ChatRepository, onPick: (TextFieldValue) -> Unit) {
-    val emotes by chat.assets.emotes.collectAsState()
-    val me by chat.me.collectAsState()
+    val emotes by chat.assets.emotes.collectAsStateWithLifecycle()
+    val me by chat.me.collectAsStateWithLifecycle()
     val text = input.text
     val caret = input.selection.end.coerceIn(0, text.length)
     val start = text.lastIndexOfAny(charArrayOf(' ', '\n'), (caret - 1).coerceAtLeast(0)).let { if (caret == 0) 0 else it + 1 }

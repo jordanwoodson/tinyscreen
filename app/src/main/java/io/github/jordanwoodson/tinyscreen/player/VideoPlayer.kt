@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.media.AudioManager
 import android.view.WindowManager
+import android.view.accessibility.AccessibilityManager
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -27,8 +28,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
@@ -36,6 +39,8 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Brightness6
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ClosedCaption
+import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Headphones
@@ -46,12 +51,13 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Replay10
-import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -65,8 +71,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -87,12 +91,21 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.C
+import androidx.media3.common.Player
+import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.ui.SubtitleView
 import androidx.media3.ui.compose.ContentFrame
 import androidx.media3.ui.compose.SURFACE_TYPE_SURFACE_VIEW
 import io.github.jordanwoodson.tinyscreen.settings.Quality
@@ -120,9 +133,9 @@ fun VideoPlayer(
     onToggleChat: (() -> Unit)? = null,
     onReload: () -> Unit = {},
 ) {
-    val state = rememberPlayerUiState(holder.player)
-    val scope = rememberCoroutineScope()
     var controlsVisible by remember { mutableStateOf(true) }
+    val state = rememberPlayerUiState(holder.player, progress = controlsVisible)
+    val scope = rememberCoroutineScope()
     var zoomed by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var hideJob by remember { mutableStateOf<Job?>(null) }
@@ -135,7 +148,16 @@ fun VideoPlayer(
         controlsVisible = true
     }
 
-    LaunchedEffect(controlsVisible, interactionTick, state.isPlaying, showSettings) {
+    val context = LocalContext.current
+    val accessibility = remember(context) { context.getSystemService(AccessibilityManager::class.java) }
+    var touchExploration by remember { mutableStateOf(accessibility.isTouchExplorationEnabled) }
+    DisposableEffect(accessibility) {
+        val listener = AccessibilityManager.TouchExplorationStateChangeListener { touchExploration = it }
+        accessibility.addTouchExplorationStateChangeListener(listener)
+        onDispose { accessibility.removeTouchExplorationStateChangeListener(listener) }
+    }
+    LaunchedEffect(controlsVisible, interactionTick, state.isPlaying, showSettings, touchExploration) {
+        if (touchExploration) { controlsVisible = true; return@LaunchedEffect }
         if (controlsVisible && state.isPlaying && !showSettings) {
             delay(3_500)
             controlsVisible = false
@@ -154,12 +176,16 @@ fun VideoPlayer(
         }
     }
 
-    val context = LocalContext.current
     // The swipe-to-dim gesture only exists in fullscreen; hand brightness back to the system after
     DisposableEffect(isFullscreen) { onDispose { resetBrightness(context) } }
     Box(
         modifier
             .background(Color.Black)
+            .then(if (!inPip && !controlsVisible) Modifier.semantics {
+                contentDescription = "Show player controls"
+                role = Role.Button
+                onClick(label = "Show player controls") { poke(); true }
+            } else Modifier)
             .pointerInput(state.canSeek) {
                 detectTapGestures(
                     onTap = {
@@ -237,6 +263,8 @@ fun VideoPlayer(
                 if (!inPip) Text("Audio only", color = Color.White.copy(alpha = 0.7f))
             }
         }
+
+        CaptionOverlay(holder.player, Modifier.fillMaxSize().padding(bottom = if (controlsVisible && !inPip) 56.dp else 0.dp))
 
         val recovery by holder.recovery.collectAsState()
         // Automatic retries show as buffering; the error only once they've stopped or wait for a network
@@ -513,6 +541,8 @@ private fun SeekBar(state: PlayerUiState, onSeek: (Long) -> Unit) {
 @kotlin.OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PlayerSettingsSheet(holder: PlayerHolder, state: PlayerUiState, onDismiss: () -> Unit) {
+    val captions by holder.languages.captions.collectAsState()
+    val audioTracks by holder.languages.audio.collectAsState()
     val qualities by holder.qualities.collectAsState()
     val selected by holder.selectedQuality.collectAsState()
     val audioOnly by holder.audioOnly.collectAsState()
@@ -540,6 +570,15 @@ private fun PlayerSettingsSheet(holder: PlayerHolder, state: PlayerUiState, onDi
                     ) { holder.selectQuality(q); onDismiss() }
                 }
             }
+            "captions", "audio tracks" -> LazyColumn {
+                val text = page == "captions"
+                val tracks = if (text) captions else audioTracks
+                val type = if (text) C.TRACK_TYPE_TEXT else C.TRACK_TYPE_AUDIO
+                if (text) item { SheetOption("Off", selected = tracks.none { it.selected }) { holder.languages.select(type, null); onDismiss() } }
+                items(tracks) { track ->
+                    SheetOption(track.label, selected = track.selected) { holder.languages.select(type, track); onDismiss() }
+                }
+            }
             "speed" -> LazyColumn {
                 items(listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 3f)) { s ->
                     SheetOption("${s}×", selected = state.speed == s) { holder.player.setPlaybackSpeed(s); onDismiss() }
@@ -552,7 +591,13 @@ private fun PlayerSettingsSheet(holder: PlayerHolder, state: PlayerUiState, onDi
                     }
                 }
             }
-            else -> Column(Modifier.padding(bottom = 24.dp)) {
+            else -> Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
+                if (captions.isNotEmpty()) {
+                    SheetRow(Icons.Filled.ClosedCaption, "Captions", captions.firstOrNull { it.selected }?.label ?: "Off") { page = "captions" }
+                }
+                if (audioTracks.size > 1) {
+                    SheetRow(Icons.Filled.Headphones, "Audio track", audioTracks.firstOrNull { it.selected }?.label ?: "Auto") { page = "audio tracks" }
+                }
                 val quality = selected?.label ?: when (active) {
                     Quality.AUTO -> "Auto" + (playing?.let { " · $it" } ?: "")
                     Quality.AUDIO -> Quality.label(active)
@@ -597,6 +642,22 @@ private fun PlayerSettingsSheet(holder: PlayerHolder, state: PlayerUiState, onDi
             TextButton(onClick = { page = "main" }, modifier = Modifier.padding(start = 8.dp, bottom = 16.dp)) { Text("Back") }
         }
     }
+}
+
+@OptIn(UnstableApi::class)
+@Composable
+private fun CaptionOverlay(player: Player, modifier: Modifier) {
+    val context = LocalContext.current
+    val view = remember(context) { SubtitleView(context).apply { setUserDefaultStyle(); setUserDefaultTextSize() } }
+    DisposableEffect(player, view) {
+        val listener = object : Player.Listener {
+            override fun onCues(cueGroup: CueGroup) { view.setCues(cueGroup.cues) }
+        }
+        view.setCues(player.currentCues.cues)
+        player.addListener(listener)
+        onDispose { player.removeListener(listener) }
+    }
+    AndroidView(factory = { view }, modifier = modifier)
 }
 
 @Composable

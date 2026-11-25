@@ -25,7 +25,7 @@ object LinkParser {
         return when {
             host == "destiny.gg" -> uri.fragment?.let { Embed.fromHash("#$it") }
             host == "youtu.be" -> segments.firstOrNull()?.let { Embed("youtube", it, start) }
-            host.endsWith("youtube.com") -> when {
+            host == "youtube.com" || host.endsWith(".youtube.com") -> when {
                 uri.getQueryParameter("v") != null -> Embed("youtube", uri.getQueryParameter("v")!!, start)
                 segments.size >= 2 && segments[0] in setOf("live", "embed", "shorts", "v") -> Embed("youtube", segments[1], start)
                 else -> null
@@ -33,7 +33,7 @@ object LinkParser {
             host == "kick.com" || host == "player.kick.com" -> when {
                 segments.size >= 3 && segments[1] == "videos" -> Embed("kick-vod", "${segments[0]}/${segments[2]}", start)
                 segments.size >= 2 && segments[0] == "video" -> Embed("kick-vod", segments[1], start)
-                segments.size >= 3 && segments[1] == "clips" -> Embed("kick-clip", segments[2])
+                segments.size >= 3 && segments[1] == "clips" -> Embed("kick-clip", "${segments[0]}/clips/${segments[2]}")
                 segments.size == 1 -> Embed("kick", segments[0].lowercase())
                 else -> null
             }

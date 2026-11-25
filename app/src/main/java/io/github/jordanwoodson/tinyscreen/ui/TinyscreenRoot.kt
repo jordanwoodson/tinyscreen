@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -41,12 +42,13 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Tv
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.SnackbarHost
@@ -54,12 +56,14 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableFloatStateOf
@@ -106,9 +110,11 @@ import io.github.jordanwoodson.tinyscreen.web.WebEmbedHolder
 import io.github.jordanwoodson.tinyscreen.web.WebEmbedPlayer
 import io.github.jordanwoodson.tinyscreen.web.firstUrl
 import io.github.jordanwoodson.tinyscreen.web.isBigscreenLink
+import kotlin.math.roundToInt
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
-import kotlin.math.roundToInt
+
+internal val LocalPanelsVisible = compositionLocalOf { true }
 
 /** Screens drawn over the main screen, which stays composed underneath. */
 private enum class Overlay { Settings, Login, Whispers }
@@ -169,7 +175,7 @@ fun TinyscreenRoot(activity: MainActivity, host: HostActions) {
 
         // Scaffold used to provide these; it can't host the movable stream and chat slots
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-            CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onBackground) {
+            CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onBackground, LocalPanelsVisible provides (overlay == null && !inPip)) {
                 MainScreen(
                     vm = vm,
                     host = host,
@@ -202,7 +208,7 @@ fun TinyscreenRoot(activity: MainActivity, host: HostActions) {
                             Overlay.Login -> io.github.jordanwoodson.tinyscreen.auth.LoginScreen(onDone = { overlay = null })
                             Overlay.Whispers -> {
                                 BackHandler { overlay = null }
-                                io.github.jordanwoodson.tinyscreen.chat.ui.WhispersScreen(onBack = { overlay = null })
+                                io.github.jordanwoodson.tinyscreen.chat.ui.WhispersScreen(inPip = inPip, onBack = { overlay = null })
                             }
                         }
                     }
@@ -244,6 +250,7 @@ private fun MainScreen(
     val scope = rememberCoroutineScope()
     val me by graph.chat.me.collectAsState()
     val unread by graph.chat.unreadWhispers.collectAsState()
+    var historyOpen by rememberSaveable { mutableStateOf(false) }
     var cinema by rememberSaveable { mutableStateOf(false) }
     var chatOnly by rememberSaveable { mutableStateOf(false) }
 
@@ -259,8 +266,9 @@ private fun MainScreen(
         }
     }
     // The web player lives outside composition (see WebEmbedHolder): load what should play, blank it otherwise
-    val webUrl = (playback as? Playback.Web)?.url
-    LaunchedEffect(webUrl) { webEmbed.show(webUrl) }
+    val web = playback as? Playback.Web
+    LaunchedEffect(web) { webEmbed.show(web?.url, web?.generation ?: -1L, web?.restore) }
+    LaunchedEffect(webEmbed) { webEmbed.mediaState.collect(vm::onWebMedia) }
     LaunchedEffect(inPip) { if (inPip) drawer.snapTo(DrawerValue.Closed) }
 
     BackHandler(enabled = !overlayOpen && drawer.isOpen) { scope.launch { drawer.close() } }
@@ -294,6 +302,29 @@ private fun MainScreen(
         }
     }
 
+    if (historyOpen && !inPip) {
+        val recent by vm.recentVods.collectAsState()
+        AlertDialog(
+            onDismissRequest = { historyOpen = false },
+            title = { Text("Continue watching") },
+            text = {
+                if (recent.isEmpty()) Text("Recently watched videos will appear here.")
+                else LazyColumn {
+                    items(recent.size) { index ->
+                        val vod = recent[index]
+                        androidx.compose.material3.ListItem(
+                            headlineContent = { Text(vod.title) },
+                            supportingContent = { Text("${vod.embed.platformName} · ${io.github.jordanwoodson.tinyscreen.player.formatDuration(vod.positionMs)}") },
+                            modifier = Modifier.clickable { historyOpen = false; vm.resumeVod(vod) },
+                        )
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { historyOpen = false }) { Text("Close") } },
+            dismissButton = { if (recent.isNotEmpty()) TextButton(onClick = vm::clearHistory) { Text("Clear history") } },
+        )
+    }
+
     ModalNavigationDrawer(
         drawerState = drawer,
         gesturesEnabled = drawer.isOpen,
@@ -307,6 +338,7 @@ private fun MainScreen(
                 onLogout = { scope.launch { drawer.close() }; graph.chat.logout() },
                 onWhispers = { scope.launch { drawer.close() }; onWhispers() },
                 onSettings = { scope.launch { drawer.close() }; onSettings() },
+                onHistory = { scope.launch { drawer.close() }; vm.savePosition(); historyOpen = true },
             )
         },
     ) {
@@ -425,10 +457,12 @@ private fun StreamControlsFor(vm: BigscreenViewModel, host: HostActions, activit
     val content by vm.content.collectAsState()
     val playback by vm.playback.collectAsState()
     val graph = (activity.application as TinyscreenApp).graph
+    val webVod by vm.webVod.collectAsState()
     StreamControls(
         content = content,
         resolvedTitle = (playback as? Playback.Native)?.stream?.title,
         usingWebPlayer = playback is Playback.Web,
+        momentUrl = if ((playback as? Playback.Native)?.stream?.isLive == false || (playback is Playback.Web && webVod)) vm::momentUrl else null,
         canTogglePlayer = content.embed?.let { graph.resolvers.supports(it) && it.webEmbedUrl() != null } == true,
         onChangePlatform = vm::changePlatform,
         onCloseEmbed = vm::closeEmbed,
@@ -499,7 +533,10 @@ private fun StreamArea(
                 is Playback.Failed -> FillBox {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(p.message, color = Color.White, modifier = Modifier.padding(16.dp))
-                        FilledTonalButton(onClick = vm::reload) {
+                        val clip = p.embed.takeIf { it.platform == "kick-clip" }?.let(::platformPageUrl)
+                    if (clip != null) {
+                        FilledTonalButton(onClick = { host.openExternal(clip) }) { Text("Open on Kick") }
+                    } else FilledTonalButton(onClick = vm::reload) {
                             Icon(Icons.Filled.Refresh, null)
                             Spacer(Modifier.width(6.dp))
                             Text("Retry")
@@ -531,7 +568,7 @@ private fun titleFor(content: Content): String? = when (content) {
 private fun MiniPlayerBar(vm: BigscreenViewModel, webEmbed: WebEmbedHolder, onExpand: () -> Unit) {
     val content by vm.content.collectAsState()
     val playback by vm.playback.collectAsState()
-    val state = io.github.jordanwoodson.tinyscreen.player.rememberPlayerUiState(vm.player.player)
+    val state = io.github.jordanwoodson.tinyscreen.player.rememberPlayerUiState(vm.player.player, progress = false)
     // A web player keeps playing out of sight (see WebEmbedHolder), so the button controls whichever is in use
     val web = playback is Playback.Web
     val webPlaying by webEmbed.playing.collectAsState()

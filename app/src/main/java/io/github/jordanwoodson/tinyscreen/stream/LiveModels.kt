@@ -30,6 +30,20 @@ data class StreamEntry(
     val type: String? = null,
 )
 
+/** Kick supplies a rotating manifest in streamInfo. Links, chat and token refreshes use the channel. */
+internal fun StreamEntry.liveEmbed(): Embed? {
+    val name = platform ?: return null
+    val identifier = id?.trim()?.takeIf(String::isNotEmpty) ?: return null
+    if (name == "kick" && identifier.startsWith("https://")) return Embed("kick", "destiny")
+    return Embed(name, identifier).takeIf { name in livePlatforms }
+}
+
+private val livePlatforms = setOf("kick", "youtube", "twitch", "rumble", "facebook", "vimeo", "angelthump")
+
+internal fun StreamInfo.playableEntries(): List<StreamEntry> {
+    return live.filter { it.liveEmbed() != null }
+}
+
 /** `dggApi:hosting` — who Destiny is hosting while offline. */
 @Serializable
 data class Hosting(

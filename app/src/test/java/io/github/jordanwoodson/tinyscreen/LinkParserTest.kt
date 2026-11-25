@@ -11,6 +11,15 @@ import org.robolectric.RobolectricTestRunner
 @RunWith(RobolectricTestRunner::class)
 class LinkParserTest {
     @Test
+    fun youtubeHasADomainBoundaryAndKickClipsRetainTheirChannel() {
+        assertNull(LinkParser.parse("https://notyoutube.com/watch?v=abc"))
+        assertEquals(Embed("youtube", "abc"), LinkParser.parse("https://music.youtube.com/watch?v=abc"))
+        val clip = LinkParser.parse("https://kick.com/destiny/clips/clip123")!!
+        assertEquals("https://kick.com/destiny/clips/clip123", io.github.jordanwoodson.tinyscreen.ui.platformPageUrl(clip))
+        assertEquals(clip, Embed.fromHash(clip.hash))
+    }
+
+    @Test
     fun parsesPlatformLinks() {
         assertEquals(Embed("kick", "destiny"), LinkParser.parse("https://kick.com/Destiny"))
         assertEquals(Embed("youtube", "dQw4w9WgXcQ"), LinkParser.parse("watch https://youtu.be/dQw4w9WgXcQ"))

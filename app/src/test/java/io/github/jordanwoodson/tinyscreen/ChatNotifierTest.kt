@@ -49,6 +49,23 @@ class ChatNotifierTest {
     }
 
     @Test
+    fun twoWhispersWithDistinctIdsSurvivePollingAndIdenticalText() {
+        val notifier = ChatNotifier(app)
+        fun show(at: Long, id: Long? = null) = notifier.show(ChatAlert.Whisper("Alice", "hi", at, id), "Jordan")
+        show(1_100, 12)
+        show(1_000)
+        show(1_200, 13)
+        show(601_000)
+        show(601_200, 14)
+        val style = NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(shadowOf(manager).allNotifications.single())!!
+        assertEquals(3, style.messages.size)
+        notifier.clearAccount()
+        assertEquals(0, shadowOf(manager).allNotifications.size)
+        show(1_100, 12)
+        assertEquals(1, shadowOf(manager).allNotifications.size)
+    }
+
+    @Test
     fun openingTheConversationClearsItsNotification() {
         val notifier = ChatNotifier(app)
         notifier.show(ChatAlert.Whisper("Alice", "hi", 1_000), me = null)

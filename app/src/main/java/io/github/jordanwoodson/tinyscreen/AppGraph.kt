@@ -11,12 +11,7 @@ import io.github.jordanwoodson.tinyscreen.net.NetworkMonitor
 import io.github.jordanwoodson.tinyscreen.player.PlayerHolder
 import io.github.jordanwoodson.tinyscreen.settings.SettingsRepository
 import io.github.jordanwoodson.tinyscreen.stream.LiveRepository
-import io.github.jordanwoodson.tinyscreen.stream.resolvers.KickResolver
-import io.github.jordanwoodson.tinyscreen.stream.resolvers.KickVodResolver
-import io.github.jordanwoodson.tinyscreen.stream.resolvers.RumbleResolver
-import io.github.jordanwoodson.tinyscreen.stream.resolvers.StreamResolvers
-import io.github.jordanwoodson.tinyscreen.stream.resolvers.TwitchResolver
-import io.github.jordanwoodson.tinyscreen.stream.resolvers.YouTubeResolver
+import io.github.jordanwoodson.tinyscreen.stream.resolvers.buildStreamResolvers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -34,19 +29,9 @@ class AppGraph(val app: Application) {
     val live by lazy { LiveRepository(app, scope) }
     val network by lazy { NetworkMonitor(app) }
     val chatAssets by lazy { ChatAssets(app) }
-    val chat by lazy { ChatRepository(app, scope, settings, chatAssets) }
+    val chat: ChatRepository by lazy { ChatRepository(app, scope, settings, chatAssets) { chatNotifications.clearAccount() } }
     val chatNotifications by lazy { ChatNotifications(app, scope, settings, chat) }
-    val resolvers by lazy {
-        StreamResolvers(
-            listOf(
-                KickResolver(),
-                KickVodResolver(),
-                TwitchResolver(),
-                YouTubeResolver(),
-                RumbleResolver(),
-            ),
-        )
-    }
+    val resolvers by lazy { buildStreamResolvers() }
 
     @Volatile var inForeground = false
         private set

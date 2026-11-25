@@ -81,6 +81,7 @@ import io.github.jordanwoodson.tinyscreen.settings.AppSettings
 import io.github.jordanwoodson.tinyscreen.stream.Embed
 import io.github.jordanwoodson.tinyscreen.stream.LinkParser
 import io.github.jordanwoodson.tinyscreen.ui.BigscreenViewModel
+import io.github.jordanwoodson.tinyscreen.ui.LocalPanelsVisible
 import io.github.jordanwoodson.tinyscreen.ui.platformIcon
 import kotlinx.coroutines.launch
 
@@ -100,7 +101,7 @@ fun PlatformChatPager(
 ) {
     val model: PlatformChatViewModel = viewModel()
     if (!settings.platformChatTabs) {
-        LaunchedEffect(Unit) { model.webViews.retain(emptySet()) }
+        LaunchedEffect(Unit) { model.lookUp(emptySet()); model.webViews.retain(emptySet()) }
         dggChat(modifier)
         return
     }
@@ -200,7 +201,7 @@ private fun PlatformChatPage(tab: ChatTab.Platform, model: PlatformChatViewModel
     // stopped app all leave the chat slot composed but out of sight
     var onScreen by remember { mutableStateOf(false) }
     val lifecycle by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
-    val active = created && onScreen && lifecycle.isAtLeast(Lifecycle.State.STARTED)
+    val active = created && current && onScreen && LocalPanelsVisible.current && lifecycle.isAtLeast(Lifecycle.State.STARTED)
     val signIn by model.signIn.collectAsState()
     val signedIn = remember(signIn) { signedIn(tab.platform) }
     Column(Modifier.fillMaxSize().background(Color.Black).onVisibilityChanged(minFractionVisible = 0.01f) { onScreen = it }) {
@@ -346,6 +347,10 @@ private fun SignInScreen(request: SignInRequest, model: PlatformChatViewModel, o
             },
         ) { padding ->
             Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
+                if (model.webViews.signInLost) {
+                    TextButton(onClick = { model.webViews.retrySignIn() }) { Text("Reload sign-in page") }
+                    return@Column
+                }
                 if (progress < 100) LinearProgressIndicator(progress = { progress / 100f }, modifier = Modifier.fillMaxWidth())
                 if (request.platform == "youtube") {
                     Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {

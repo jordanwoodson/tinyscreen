@@ -29,7 +29,11 @@ import io.github.jordanwoodson.tinyscreen.stream.resolvers.get
 import io.github.jordanwoodson.tinyscreen.stream.resolvers.long
 import io.github.jordanwoodson.tinyscreen.stream.resolvers.string
 import io.github.jordanwoodson.tinyscreen.web.createWebView
-import kotlinx.coroutines.delay
+import io.github.jordanwoodson.tinyscreen.TinyscreenApp
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -48,7 +52,8 @@ class PlatformChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _found = MutableStateFlow<Map<ChatLookup, ChatLookupResult>>(emptyMap())
     val found: StateFlow<Map<ChatLookup, ChatLookupResult>> = _found.asStateFlow()
-    private val inFlight = mutableSetOf<ChatLookup>()
+    private val inFlight = mutableMapOf<ChatLookup, Job>()
+    private val online = (app as TinyscreenApp).graph.network.online
 
     /** The tab last shown, so the pager comes back to it after rotating or hiding chat. */
     var selectedKey: String = ChatTab.Dgg.key
@@ -77,11 +82,28 @@ class PlatformChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun lookUp(lookups: Set<ChatLookup>) {
-        lookups.filter { it !in _found.value && inFlight.add(it) }.forEach { lookup ->
-            viewModelScope.launch {
-                val result = ChatLookups.lookUpWithRetry(lookup)
-                inFlight -= lookup
-                _found.update { it + (lookup to result) }
+        (inFlight.keys - lookups).forEach { inFlight.remove(it)?.cancel() }
+        for (lookup in lookups) {
+            if (lookup in inFlight) continue
+            inFlight[lookup] = viewModelScope.launch {
+                var waitMs = 2_000L
+                while (true) {
+                    try {
+                        val result = ChatLookups.lookUp(lookup)
+                        _found.update { it + (lookup to result) }
+                        if (result.chatUrl != null) return@launch
+                        waitMs = 5 * 60_000L
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.w("PlatformChat", "Chat lookup failed for $lookup", e)
+                    }
+                    withTimeoutOrNull(waitMs) {
+                        online.first { !it }
+                        online.first { it }
+                    }
+                    waitMs = (waitMs * 2).coerceAtMost(60_000)
+                }
             }
         }
     }
@@ -116,6 +138,10 @@ class PlatformWebViews(private val app: Context) {
 
     private val kept = mutableMapOf<String, Kept>()
     private var signIn: SignInView? = null
+    var signInLost by mutableStateOf(false)
+        private set
+
+    fun retrySignIn() { signInLost = false }
 
     private val _signInProgress = MutableStateFlow(0)
     /** Loading progress of the sign-in page, 0–100. */
@@ -169,6 +195,13 @@ class PlatformWebViews(private val app: Context) {
                 context,
                 adblock = { adblock },
                 userAgent = Http.MOBILE_UA,
+                onRenderProcessGone = { gone, _ ->
+                    if (signIn?.view === gone) {
+                        signIn = null
+                        context.baseContext = app
+                        signInLost = true
+                    }
+                },
                 // Pages that hand off to an app (intent://, market://) can't load here
                 onNavigate = { uri -> uri.scheme != "http" && uri.scheme != "https" },
                 onPageFinished = { v, url ->
@@ -199,6 +232,7 @@ class PlatformWebViews(private val app: Context) {
     }
 
     fun releaseSignIn() {
+        signInLost = false
         signIn?.let { destroy(it.view, it.context) }
         signIn = null
     }
@@ -335,16 +369,6 @@ internal fun signedIn(platform: String): Boolean? = when (platform) {
 
 /** The requests behind [ChatLookup]s. */
 object ChatLookups {
-    private const val TAG = "PlatformChat"
-
-    suspend fun lookUpWithRetry(lookup: ChatLookup): ChatLookupResult {
-        repeat(3) { attempt ->
-            runCatching { return lookUp(lookup) }.onFailure { Log.w(TAG, "chat lookup failed for $lookup", it) }
-            delay(2_000L shl attempt)
-        }
-        return ChatLookupResult(null)
-    }
-
     suspend fun lookUp(lookup: ChatLookup): ChatLookupResult = when (lookup.platform) {
         "youtube" -> youtube(lookup.id)
         "rumble" -> rumble(lookup.id)

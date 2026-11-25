@@ -38,8 +38,15 @@ class ChatNotifier(private val context: Context) {
         if (!canNotify()) return
         val now = System.currentTimeMillis()
         recent.entries.removeAll { now - it.value > DEDUPE_MS }
-        val dedupe = "${alert::class.simpleName}|${alert.from.lowercase()}|${alert.text}"
-        if (recent.put(dedupe, now) != null) return
+        val key = "${alert::class.simpleName}|${alert.from.lowercase()}|${alert.timestamp / 1000}|${alert.text}"
+        val id = (alert as? ChatAlert.Whisper)?.id
+        if (id == null) {
+            if ("identified:$key" in recent || recent.put("text:$key", now) != null) return
+        } else {
+            if (recent.put("id:$id", now) != null) return
+            recent["identified:$key"] = now
+            if (recent.remove("text:$key") != null) return
+        }
         val line = Line(alert.from, alert.text, alert.timestamp)
         when (alert) {
             is ChatAlert.Whisper -> {
@@ -55,6 +62,15 @@ class ChatNotifier(private val context: Context) {
                 post(MENTIONS_ID, conversation(me, mentions, title = "Mentions in chat"), "Mentions in chat", open(MENTIONS_ID, null))
             }
         }
+    }
+
+    @Synchronized
+    fun clearAccount() {
+        val manager = context.getSystemService(NotificationManager::class.java)
+        manager.activeNotifications.filter { it.notification.channelId == CHANNEL }.forEach { manager.cancel(it.tag, it.id) }
+        whispers.clear()
+        mentions.clear()
+        recent.clear()
     }
 
     /** You've opened the conversation, so its notification is read. */

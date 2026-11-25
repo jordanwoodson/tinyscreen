@@ -53,9 +53,20 @@ android {
             // Local release builds without key.properties fall back to the debug key
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
+        create("smoke") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".smoke"
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += "release"
+        }
         debug {
             applicationIdSuffix = ".debug"
         }
+    }
+
+    sourceSets {
+        getByName("debug").kotlin.srcDir("src/providers/java")
+        getByName("release").kotlin.srcDir("src/providers/java")
     }
 
     kotlin {
@@ -119,6 +130,7 @@ dependencies {
     implementation(libs.media3.exoplayer.dash)
     implementation(libs.media3.datasource.okhttp)
     implementation(libs.media3.session)
+    implementation(libs.media3.views)
     implementation(libs.media3.ui.compose)
 
     implementation(libs.okhttp)

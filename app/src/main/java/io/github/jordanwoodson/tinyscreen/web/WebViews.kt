@@ -7,9 +7,9 @@ import android.content.Context
 import android.content.MutableContextWrapper
 import android.graphics.Bitmap
 import android.net.Uri
+import android.util.Log
 import android.view.View
 import android.view.ViewGroup
-import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
@@ -30,6 +30,7 @@ import androidx.webkit.WebViewFeature
 import io.github.jordanwoodson.tinyscreen.TinyscreenApp
 import io.github.jordanwoodson.tinyscreen.adblock.AdBlocker
 import io.github.jordanwoodson.tinyscreen.net.Http
+import io.github.jordanwoodson.tinyscreen.player.PlaybackCheckpoint
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -44,6 +45,7 @@ fun createWebView(
     userAgent: String = Http.MOBILE_UA,
     onNavigate: ((Uri) -> Boolean)? = null,
     onPageFinished: ((WebView, String) -> Unit)? = null,
+    interceptRequest: ((WebResourceRequest) -> WebResourceResponse?)? = null,
     chrome: WebChromeClient? = null,
     /**
      * The renderer crashed or Android killed it for memory. The dead WebView has already been removed
@@ -68,7 +70,7 @@ fun createWebView(
     CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
     webViewClient = object : WebViewClient() {
         override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
-            AdBlocker.intercept(request, adblock())
+            interceptRequest?.invoke(request) ?: AdBlocker.intercept(request, adblock())
 
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
             if (!request.isForMainFrame) return false
@@ -116,28 +118,46 @@ internal val PLAYER_ORIGINS = setOf(
  * Runs in each player frame: tells the app whether its video or audio is playing, and pauses or
  * resumes it when asked, through the `TinyscreenMedia` object that [WebEmbedHolder] injects.
  */
-private val MEDIA_SCRIPT = """
+private fun mediaScript(generation: Long) = """
     (function(){
       var bridge = window.TinyscreenMedia;
       if (!bridge || window.__tinyscreenMedia) return;
       window.__tinyscreenMedia = true;
-      var last = null, current = null;
+      var last = '', current = null, holdPause = false;
+      function send(data){ bridge.postMessage('$generation|' + data); }
       function media(){ return document.querySelectorAll('video,audio'); }
       function report(e){
         if (e && e.target instanceof HTMLMediaElement) current = e.target;
-        var playing = false;
-        media().forEach(function(m){ if (!m.paused && !m.ended) playing = true; });
-        var state = playing ? 'playing' : 'paused';
-        if (state !== last) { last = state; bridge.postMessage(state); }
+        if (!current) return;
+        if (holdPause && !current.paused) current.pause();
+        var pos = Math.floor(current.currentTime * 1000);
+        var live = !Number.isFinite(current.duration);
+        var yt = document.getElementById('movie_player');
+        if (yt && typeof yt.getVideoData === 'function' && yt.getVideoData()?.isLive) live = true;
+        var state = current.ended ? 'ended' : current.paused ? 'paused' : 'playing';
+        var title = (yt && typeof yt.getVideoData === 'function' && yt.getVideoData()?.title) || document.title || '';
+        title = title.trim().slice(0, 256);
+        var bucket = state + ':' + Math.floor(pos / 1000) + ':' + live + ':' + title;
+        if (bucket !== last) { last = bucket; send(state + '|' + (live ? -1 : pos) + '|' + title); }
+        if (e && e.type === 'loadedmetadata') send('ready');
       }
-      ['play', 'playing', 'pause', 'ended', 'emptied'].forEach(function(t){ document.addEventListener(t, report, true); });
-      window.addEventListener('pagehide', function(){ last = 'paused'; bridge.postMessage('paused'); });
+      ['play','playing','pause','ended','loadedmetadata','seeked','timeupdate'].forEach(function(t){ document.addEventListener(t,report,true); });
+      ['pointerdown','keydown'].forEach(function(t){ document.addEventListener(t,function(){ holdPause = false; },true); });
+      window.addEventListener('pagehide',function(){ send('gone'); });
       bridge.onmessage = function(e){
         if (e.data === 'pause') media().forEach(function(m){ m.pause(); });
-        else if (e.data === 'play' && current) current.play();
+        else if (e.data === 'play' && current) { holdPause = false; current.play(); }
+        else if (e.data.startsWith('restore|') && current) {
+          var parts = e.data.split('|'), pos = Number(parts[1]);
+          if (pos >= 0 && Number.isFinite(current.duration)) current.currentTime = pos / 1000;
+          holdPause = parts[2] === 'false';
+          if (holdPause) current.pause(); else current.play().catch(function(){});
+        }
       };
     })();
 """.trimIndent()
+
+data class WebMediaState(val generation: Long, val positionMs: Long?, val playing: Boolean, val ended: Boolean, val title: String?)
 
 /**
  * Owns the web player's WebView outside composition, so rotating, picture-in-picture, Settings and
@@ -163,7 +183,12 @@ class WebEmbedHolder(app: Application) : AndroidViewModel(app) {
     private var reportsMedia = false
     /** Ad hiding inside the player iframes, which [createWebView]'s main-frame script can't reach. */
     private var cosmeticScript: ScriptHandler? = null
+    private var mediaScriptHandle: ScriptHandler? = null
     private val frames = mutableMapOf<JavaScriptReplyProxy, Boolean>()
+
+    private val _mediaState = MutableStateFlow<WebMediaState?>(null)
+    val mediaState = _mediaState.asStateFlow()
+    private var pendingRestore: PlaybackCheckpoint? = null
 
     private val _active = MutableStateFlow(false)
     /** Whether an embed is loaded. */
@@ -201,6 +226,7 @@ class WebEmbedHolder(app: Application) : AndroidViewModel(app) {
             true
         },
         chrome = chrome,
+        interceptRequest = playerRequestInterceptor(getApplication()),
         onRenderProcessGone = { gone, _ -> if (gone === webView) recoverRenderer() },
     ).also { view ->
         webView = view
@@ -208,21 +234,45 @@ class WebEmbedHolder(app: Application) : AndroidViewModel(app) {
             WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
         ) {
             WebViewCompat.addWebMessageListener(view, "TinyscreenMedia", PLAYER_ORIGINS) { _, message, _, _, frame ->
-                frames[frame] = message.data == "playing"
+                val payload = message.data ?: return@addWebMessageListener
+                if (payload.substringBefore('|').toLongOrNull() != lastGeneration) return@addWebMessageListener
+                val data = payload.substringAfter('|')
+                when (data) {
+                    "ready" -> pendingRestore?.let {
+                        frame.postMessage("restore|${it.positionMs ?: -1}|${it.playWhenReady && !inBackground}")
+                        pendingRestore = null
+                    }
+                    "gone" -> frames.remove(frame)
+                    else -> {
+                        val state = data.substringBefore('|')
+                        if (state !in setOf("playing", "paused", "ended")) return@addWebMessageListener
+                        val media = data.substringAfter('|')
+                        val pos = media.substringBefore('|').toLongOrNull()?.takeIf { it >= 0 }
+                        val title = media.substringAfter('|', "").take(256).takeIf { it.isNotBlank() }
+                        frames[frame] = state == "playing"
+                        _mediaState.value = WebMediaState(lastGeneration, pos, state == "playing", state == "ended", title)
+                    }
+                }
                 _playing.value = frames.values.any { it }
             }
-            WebViewCompat.addDocumentStartJavaScript(view, MEDIA_SCRIPT, PLAYER_ORIGINS)
             reportsMedia = true
         }
     }
 
+    private var lastGeneration = -1L
+
     /**
      * Plays [embedUrl] inside an iframe whose parent origin is destiny.gg — the same way the bigscreen
      * page hosts it, which satisfies Twitch's `parent=` and YouTube's referrer checks. Null blanks the
-     * player. Loading the URL that's already playing does nothing.
+     * player. A new generation reloads the page even when the URL matches.
      */
-    fun show(embedUrl: String?) {
-        if (embedUrl == loadedUrl) return
+    fun show(embedUrl: String?, generation: Long = lastGeneration, restore: PlaybackCheckpoint? = null) {
+        val sameRequest = generation == lastGeneration
+        lastGeneration = generation
+        if (sameRequest && embedUrl == loadedUrl) return
+        reloadOnForeground = null
+        pendingRestore = restore
+        _mediaState.value = null
         loadedUrl = embedUrl
         frames.clear()
         _active.value = embedUrl != null
@@ -236,6 +286,10 @@ class WebEmbedHolder(app: Application) : AndroidViewModel(app) {
             return
         }
         val view = view()
+        if (reportsMedia && WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            mediaScriptHandle?.remove()
+            mediaScriptHandle = WebViewCompat.addDocumentStartJavaScript(view, mediaScript(generation), PLAYER_ORIGINS)
+        }
         _playing.value = !reportsMedia
         syncCosmeticScript(view)
         view.loadDataWithBaseURL("$DGG_ORIGIN/bigscreen", iframeHtml(embedUrl), "text/html", "utf-8", null)
@@ -245,6 +299,8 @@ class WebEmbedHolder(app: Application) : AndroidViewModel(app) {
         val url = loadedUrl
         webView = null
         cosmeticScript = null
+        mediaScriptHandle = null
+        val checkpoint = _mediaState.value?.let { PlaybackCheckpoint(it.positionMs, it.playing) } ?: pendingRestore
         reportsMedia = false
         loadedUrl = null
         exitFullscreen()
@@ -252,10 +308,11 @@ class WebEmbedHolder(app: Application) : AndroidViewModel(app) {
         // Reloading in the background would start the embed playing out of sight
         if (inBackground) {
             reloadOnForeground = url
+            pendingRestore = checkpoint
             frames.clear()
             _playing.value = false
         } else {
-            show(url)
+            show(url, restore = checkpoint)
         }
     }
 
@@ -273,13 +330,17 @@ class WebEmbedHolder(app: Application) : AndroidViewModel(app) {
 
     /** Pauses whatever the player frames are playing. */
     fun pause() {
-        frames.keys.forEach { it.postMessage("pause") }
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            frames.keys.forEach { it.postMessage("pause") }
+        }
     }
 
     /** Resumes the media that last played, or pauses it if it's playing. */
     fun togglePlayback() {
         val message = if (_playing.value) "pause" else "play"
-        frames.keys.forEach { it.postMessage(message) }
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            frames.keys.forEach { it.postMessage(message) }
+        }
     }
 
     /** The app went to the background (not into picture-in-picture): a web player can't keep playing there. */
@@ -294,7 +355,7 @@ class WebEmbedHolder(app: Application) : AndroidViewModel(app) {
         webView?.onResume()
         reloadOnForeground?.let { url ->
             reloadOnForeground = null
-            if (loadedUrl == null) show(url)
+            if (loadedUrl == null) show(url, restore = pendingRestore)
         }
     }
 
