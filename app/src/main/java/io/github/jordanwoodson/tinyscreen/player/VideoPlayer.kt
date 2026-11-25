@@ -11,6 +11,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -85,6 +86,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -134,6 +136,7 @@ fun VideoPlayer(
     onReload: () -> Unit = {},
 ) {
     var controlsVisible by remember { mutableStateOf(true) }
+    var controlsFocused by remember { mutableStateOf(false) }
     val state = rememberPlayerUiState(holder.player, progress = controlsVisible)
     val scope = rememberCoroutineScope()
     var zoomed by remember { mutableStateOf(false) }
@@ -156,9 +159,9 @@ fun VideoPlayer(
         accessibility.addTouchExplorationStateChangeListener(listener)
         onDispose { accessibility.removeTouchExplorationStateChangeListener(listener) }
     }
-    LaunchedEffect(controlsVisible, interactionTick, state.isPlaying, showSettings, touchExploration) {
+    LaunchedEffect(controlsVisible, controlsFocused, interactionTick, state.isPlaying, showSettings, touchExploration) {
         if (touchExploration) { controlsVisible = true; return@LaunchedEffect }
-        if (controlsVisible && state.isPlaying && !showSettings) {
+        if (controlsVisible && !controlsFocused && state.isPlaying && !showSettings) {
             delay(3_500)
             controlsVisible = false
         }
@@ -332,7 +335,7 @@ fun VideoPlayer(
                 visible = controlsVisible || !state.hasMedia,
                 enter = fadeIn(),
                 exit = fadeOut(),
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().onFocusChanged { controlsFocused = it.hasFocus }.focusGroup(),
             ) {
                 Controls(
                     state = state,
