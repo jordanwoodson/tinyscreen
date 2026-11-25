@@ -12,6 +12,8 @@ on:
       - "*.gradle.kts"
       - "gradle.properties"
       - ".github/workflows/release.yml"
+      - ".github/workflows/playback.yml"
+      - "scripts/test-playback.py"
   workflow_dispatch:
 
 # Queue releases so two pushes can't claim the same version number
@@ -32,6 +34,9 @@ env:
   CERT_SHA256: 39752f6c8f3cd92ecd3dd79261c739ed3a7fb3ba057ed763ab076e1a401dd5ff
 
 jobs:
+  playback:
+    uses: ./.github/workflows/playback.yml
+
   build:
     name: Build and sign
     # Releases only come from main, also when the workflow is started by hand
@@ -132,7 +137,7 @@ jobs:
 
   publish:
     name: Publish the GitHub release
-    needs: build
+    needs: [build, playback]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10

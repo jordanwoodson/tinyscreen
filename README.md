@@ -18,11 +18,17 @@ Unofficial — not affiliated with destiny.gg.
   Subscribe, Donate, Close Embed, Change Platform. Banned embeds show the "content is blocked" screen.
 - Top embeds strip (what chat is watching), refreshed live from `wss://live.destiny.gg`.
 - Open anything from chat links, `/embed`, deep links (`destiny.gg/bigscreen#…`) or by sharing a
-  Kick/Twitch/YouTube/Rumble link to Tinyscreen.
+  Kick/Twitch/YouTube/Rumble link to Tinyscreen. Auto tries another available live platform when a source fails.
+  Kick clips open on Kick.
 
 **Player**
 - Material 3 controls: play/pause, ±10 s and double-tap seek, DVR/VOD seek bar, LIVE / go-to-live chip,
   quality picker, playback speed, audio-only mode, sleep timer, mute, fit/zoom (pinch too), stats.
+- **More → Share this moment** sends a bigscreen link starting at the current VOD position.
+  **Menu → Continue watching** reopens the last 12 unfinished videos at their saved positions.
+  The history stays on this device and can be cleared from that menu.
+- The native player's settings offer captions and alternate audio when the video includes those tracks.
+  It remembers the languages you select. Reloading a VOD preserves its position and play/pause state.
 - Fullscreen landscape with swipe gestures for brightness (left) and volume (right).
 - Picture-in-picture (auto when you go home), background audio with media notification and lock-screen
   controls, low-latency live playback.
@@ -59,7 +65,7 @@ Kick, Twitch, X, Reddit and Discord work).
 
 ## Install with Obtainium
 
-Every push to `main` builds a signed APK and publishes it as a GitHub release
+App changes pushed to `main` build a signed APK and publish it as a GitHub release
 (`.github/workflows/release.yml`). Because this repository is private, Obtainium needs a token:
 
 1. Create a GitHub **fine-grained personal access token** with access to only this repository and
@@ -67,6 +73,13 @@ Every push to `main` builds a signed APK and publishes it as a GitHub release
 2. In Obtainium: **Settings → GitHub → Personal access token**, paste the token.
 3. **Add app** → `https://github.com/jordanwoodson/tinyscreen` → Add. Obtainium picks up the
    `tinyscreen-v1.0.N.apk` asset from the latest release and offers updates from then on.
+
+## Opening links on Android
+
+From a video, choose **Share → Tinyscreen** to play it. This also works when a browser or platform app
+already handles the link. For supported bigscreen links on Android 12 and later, open **Tinyscreen →
+Settings → Open supported links**, enable **Open supported links**, and select the destiny.gg addresses
+Android offers.
 
 ## Building
 
@@ -88,6 +101,19 @@ build. After fixing old findings, regenerate it with `./gradlew :app:updateLintB
 
 ### Smoke-testing the release build
 
+The release workflow runs a minified build with a bundled video on an Android emulator. It checks
+playback recovery, forward progress, paused reload, timestamp sharing, saved history and track selection.
+To run it against a booted emulator:
+
+```sh
+./gradlew :app:assembleSmoke
+python3 scripts/test-playback.py -s emulator-5554
+```
+
+Running **Playback on Android** manually in Actions also checks a public YouTube video using the production
+resolvers. To run that check locally after installing the release APK, use
+`python3 scripts/test-playback.py -s emulator-5554 --public-youtube`.
+
 The release build is shrunk and obfuscated by R8, which can break code the debug build runs fine.
 To check a release APK on a device or emulator:
 
@@ -98,15 +124,15 @@ scripts/smoke-test-release.sh -s emulator-5554     # serial from `adb devices -l
 
 It installs `app/build/outputs/apk/release/app-release.apk` (or the APK you pass), launches the
 app, opens a YouTube embed, and fails if the app crashed, stopped responding, or logged an exception
-R8 typically causes. Logcat and a screenshot are saved in `app/build/smoke-test/`. A locally built
-APK is signed with the debug key, so it can't replace the CI release on a phone; `--replace`
-uninstalls the installed copy first, which deletes its data. `-h` lists the options.
+R8 typically causes. Logcat and a screenshot are saved in `app/build/smoke-test/`. A local release
+uses the debug key when the release keystore is absent. For installations signed with a different
+key, `--replace` uninstalls the installed copy first, which deletes its data. `-h` lists the options.
 
 ## Releases
 
 - Every push to `main` that touches `app/`, `gradle/`, the Gradle scripts or the release workflow
   publishes a release; running the workflow by hand only publishes from `main`. Pull requests run
-  the tests, lint and a release build (`.github/workflows/check.yml`) but publish nothing.
+  the tests, lint, emulator playback check and a release build (`.github/workflows/check.yml`) but publish nothing.
 - Versions are `1.0.N`, counting up from the newest tag (`scripts/next-version.sh`, which also
   prints the next version when run locally). The version code is `MAJOR×1,000,000 + MINOR×1,000 + N`,
   so 1.0.5 is 1000005, and moving to 1.1.0 (change `VERSION_LINE` in the script) still goes up.

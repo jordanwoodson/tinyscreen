@@ -19,6 +19,9 @@ defaults:
     shell: bash # -eo pipefail
 
 jobs:
+  playback:
+    uses: ./.github/workflows/playback.yml
+
   check:
     name: Test, lint and build
     runs-on: ubuntu-latest
